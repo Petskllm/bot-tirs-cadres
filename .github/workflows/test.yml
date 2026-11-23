@@ -1,26 +1,32 @@
-name: Test Bzzoiro
+name: Bot tirs cadrés
 
 on:
-  push:
+  schedule:
+    # Exécution quotidienne à 18:00 UTC.
+    - cron: "0 18 * * *"
   workflow_dispatch:
 
-jobs:
-  run-test:
-    runs-on: ubuntu-latest
+permissions:
+  contents: read
 
+concurrency:
+  group: bot-tirs-cadres
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Récupérer le code
         uses: actions/checkout@v4
-
       - name: Installer Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-
+          python-version: "3.11"
       - name: Installer les dépendances
-        run: pip install requests
-
-      - name: Lancer le script
+        run: python -m pip install -r requirements.txt
+      - name: Exécuter le bot
         env:
           BZZOIRO_TOKEN: ${{ secrets.BZZOIRO_TOKEN }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
