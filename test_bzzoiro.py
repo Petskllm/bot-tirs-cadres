@@ -1,6 +1,6 @@
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BZZOIRO_TOKEN")
@@ -26,27 +26,32 @@ def send_telegram(msg):
                       json={"chat_id": TG_CHAT, "text": msg[i:i+4000]})
 
 def main():
-    today = datetime.now().strftime("%Y-%m-%d")
-    events = api_get(f"events/?date_from={today}&date_to={today}")
+    # On regarde les matchs de DEMAIN pour être sûr d'avoir le statut "notstarted"
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    events = api_get(f"events/?date_from={tomorrow}&date_to={tomorrow}")
     
     if not events or not events.get("results"):
-        send_telegram("Aucun match aujourd'hui.")
+        send_telegram(f"Aucun match trouvé dans l'API pour demain ({tomorrow}).")
         return
     
     matches = events["results"]
     leagues = set()
+    statuses = set()
     
     for m in matches:
-        if m.get("status") == "notstarted":
-            name = m.get("league_name")
-            if name:
-                leagues.add(name)
+        name = m.get("league_name")
+        status = m.get("status")
+        if name: leagues.add(name)
+        if status: statuses.add(status)
                 
-    msg = f"🔍 LISTE DES LIGUES DU JOUR (API) :\n\n"
+    msg = f"🔍 LIGUES DE DEMAIN ({tomorrow}) :\n\n"
     if leagues:
         msg += "\n".join(f"• {name}" for name in sorted(leagues))
     else:
-        msg += "Aucune ligue trouvée avec le statut 'notstarted'."
+        msg += "Aucune ligue trouvée."
+        
+    msg += f"\n\n📊 Statuts rencontrés : {list(statuses)}"
         
     send_telegram(msg)
     print("✅ Liste envoyée !")
