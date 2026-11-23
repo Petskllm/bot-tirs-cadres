@@ -5,6 +5,12 @@ on:
     # Exécution quotidienne à 18:00 UTC.
     - cron: "0 18 * * *"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Analyser et afficher les pronostics sans envoyer Telegram"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,4 +37,5 @@ jobs:
           BZZOIRO_TOKEN: ${{ secrets.BZZOIRO_TOKEN }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
         run: python test_bzzoiro.py

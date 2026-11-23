@@ -2,16 +2,18 @@ import os
 import requests
 import math
 import time
+from functools import lru_cache
 from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BZZOIRO_TOKEN")
 TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT = os.getenv("CHAT_ID")
+DRY_RUN = os.getenv("DRY_RUN", "0").lower() in {"1", "true", "yes"}
 BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
 
-if not all([TOKEN, TG_TOKEN, TG_CHAT]):
+if not TOKEN or (not DRY_RUN and not all([TG_TOKEN, TG_CHAT])):
     print("❌ Secrets manquants")
     exit(1)
 
@@ -22,6 +24,7 @@ LIGUES_AUTORISEES = [
     "eredivisie", "primeira liga", "championship", "brasileirao", "ligue 2", "serie b", "la liga 2"
 ]
 
+@lru_cache(maxsize=512)
 def api_get(endpoint):
     try:
         r = requests.get(f"{BASE}/{endpoint}", headers=headers, timeout=15)
@@ -100,6 +103,99 @@ def get_team_stats(team_id, stat_type, preferred_side=None):
     total_weight = sum(w for v, w in weighted_vals)
     weighted_avg = sum(v * w for v, w in weighted_vals) / total_weight
     return [weighted_avg]
+
+
+@lru_cache(maxsize=256)
+def get_team_shot_profile(team_id, preferred_side, league_id=None):
+    """Retourne moyenne et dispersion des tirs récents d'une équipe.
+
+    Le profil utilise les statistiques de match disponibles dans l'API v2.
+    La variance historique permet de ne pas traiter tous les matchs comme
+    une loi de Poisson parfaitement régulière.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    past = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
+    league_filter = f"&league_id={league_id}" if league_id else ""
+    events = api_get(
+        f"events/?team_id={team_id}&date_from={past}&date_to={today}{league_filter}"
+    )
+    if not events or not events.get("results"):
+        return {}
+
+    finished = [e for e in events["results"] if e.get("status") == "finished"]
+    finished.sort(key=lambda x: x.get("event_date", ""), reverse=True)
+    fields = ("total_shots", "shots_on_target", "shots_off_target", "blocked_shots", "hit_woodwork")
+    observations = {field: [] for field in fields}
+    observations["xg"] = []
+
+    for idx, event in enumerate(finished[:10]):
+        stats = api_get(f"events/{event['id']}/stats/")
+        if not stats or not stats.get("stats"):
+            continue
+        side = "home" if event.get("home_team_id") == team_id else "away"
+        values = stats["stats"].get(side, {})
+        base_weight = max(1.0, 1.6 - (idx * 0.12))
+        weight = base_weight * (1.85 if side == preferred_side else 0.65)
+
+        for field in fields:
+            value = values.get(field)
+            try:
+                if value is not None:
+                    observations[field].append((float(value), weight))
+            except (TypeError, ValueError):
+                continue
+
+        xg = values.get("xg")
+        if isinstance(xg, dict):
+            xg = xg.get("actual")
+        try:
+            if xg is not None:
+                observations["xg"].append((float(xg), weight))
+        except (TypeError, ValueError):
+            pass
+
+    profile = {}
+    for field, values in observations.items():
+        if not values:
+            continue
+        total_weight = sum(weight for value, weight in values)
+        average = sum(value * weight for value, weight in values) / total_weight
+        variance = sum(weight * (value - average) ** 2 for value, weight in values) / total_weight
+        profile[field] = {
+            "average": average,
+            "variance": variance,
+            "samples": len(values),
+        }
+
+    # Certains matchs ne renseignent pas total_shots mais fournissent les
+    # composantes. On reconstruit alors une estimation prudente.
+    if "total_shots" not in profile:
+        components = [profile.get(field) for field in ("shots_on_target", "shots_off_target", "blocked_shots")]
+        if all(components):
+            profile["total_shots"] = {
+                "average": sum(item["average"] for item in components),
+                "variance": sum(item["variance"] for item in components),
+                "samples": min(item["samples"] for item in components),
+            }
+    return profile
+
+
+def line_probabilities(mean, variance, line, samples):
+    """Probabilités over/under avec Poisson de secours ou approximation normale.
+
+    Pour au moins cinq observations, la dispersion historique est utilisée.
+    La variance ne descend jamais sous la moyenne, qui est le plancher de la
+    loi de Poisson pour un comptage.
+    """
+    if mean <= 0:
+        return 0.0, 1.0
+    if samples < 5:
+        over = poisson_plus_de(mean, line)
+        return over, 1 - over
+    standard_deviation = math.sqrt(max(mean, variance, 1.0))
+    z = (line - mean) / standard_deviation
+    under = 0.5 * (1 + math.erf(z / math.sqrt(2)))
+    return 1 - under, under
 
 def get_players_sot_history(team_id):
     today = datetime.now().strftime("%Y-%m-%d")
@@ -186,41 +282,47 @@ def main():
         # ============================================
         # 1. TIRS TOTAUX (avec séparation D/E + xG)
         # ============================================
-        h_shots = get_team_stats(home_id, "total_shots", preferred_side="home")
-        a_shots = get_team_stats(away_id, "total_shots", preferred_side="away")
-        h_xg = get_team_stats(home_id, "xg", preferred_side="home")
-        a_xg = get_team_stats(away_id, "xg", preferred_side="away")
+        h_profile = get_team_shot_profile(home_id, "home", l_id)
+        a_profile = get_team_shot_profile(away_id, "away", l_id)
 
-        if h_shots and a_shots:
-            # On mélange un peu les tirs réels et les xG pour plus de robustesse
-            h_val = h_shots[0]
-            a_val = a_shots[0]
-
-            if h_xg:
-                h_val = (h_shots[0] * 0.65) + (h_xg[0] * 8.5 * 0.35)  # approx conversion xG → tirs
-            if a_xg:
-                a_val = (a_shots[0] * 0.65) + (a_xg[0] * 8.5 * 0.35)
-
+        if h_profile.get("total_shots") and a_profile.get("total_shots"):
+            # Les tirs restent la variable cible. L'xG est conservé comme
+            # information complémentaire, mais n'est plus converti avec le
+            # facteur arbitraire 8,5 qui pouvait déformer le total attendu.
+            h_shot_stat = h_profile["total_shots"]
+            a_shot_stat = a_profile["total_shots"]
+            h_val = h_shot_stat["average"]
+            a_val = a_shot_stat["average"]
             match_total = h_val + a_val
+            match_variance = h_shot_stat["variance"] + a_shot_stat["variance"]
+            sample_count = min(h_shot_stat["samples"], a_shot_stat["samples"])
 
             if 18 < match_total < 48:
-                best_prob, best_line, best_cote = 0, None, None
-                for line in [26.5, 27.5, 28.5, 29.5]:
-                    prob = poisson_plus_de(match_total, line)
-                    cote_estimee = round(1 / prob * 1.04, 2)
-                    if prob >= 0.56 and cote_estimee >= 1.28 and prob > best_prob:
-                        best_prob, best_line, best_cote = prob, line, cote_estimee
+                # Ligne principale : plus de 27 = au moins 27 tirs,
+                # moins de 27 = au plus 26 tirs. Les deux probabilités
+                # sont complémentaires sur la ligne 26,5.
+                line = 26.5
+                over_prob, under_prob = line_probabilities(
+                    match_total, match_variance, line, sample_count
+                )
+                candidates = [
+                    ("+27", over_prob),
+                    ("-27", under_prob),
+                ]
+                best_label, best_prob = max(candidates, key=lambda item: item[1])
+                best_cote = round(1 / best_prob * 1.04, 2) if best_prob else None
 
-                if best_line:
+                if best_prob >= 0.56 and best_cote >= 1.28:
                     picks_total.append(
                         f"⚽ {match_title}\n"
                         f"  Total attendu : {match_total:.1f}\n"
-                        f"  • +{best_line} tirs : {best_prob:.0%} (Cote min : {best_cote})"
+                        f"  • +27 tirs : {over_prob:.0%} | -27 tirs : {under_prob:.0%}\n"
+                        f"  • Sélection : {best_label} tirs — {best_prob:.0%} (Cote estimée : {best_cote})"
                     )
                     combo_pool_totals.append({
                         "match_id": fid,
                         "match_name": match_title,
-                        "desc": f"+{best_line} tirs (Total)",
+                        "desc": f"{best_label} tirs (Total)",
                         "prob": best_prob,
                         "cote": best_cote
                     })
@@ -359,6 +461,11 @@ def main():
 
     if not any([picks_total, picks_cadres_eq, picks_cadres_joueurs, picks_corners, picks_cartons]):
         msg += "❌ Aucune sélection ne passe les filtres aujourd'hui."
+
+    if DRY_RUN:
+        print("🧪 DRY_RUN actif : aucun message Telegram envoyé")
+        print(msg)
+        return
 
     send_telegram(msg)
     print("✅ Message envoyé !")
