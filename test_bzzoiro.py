@@ -124,7 +124,10 @@ def get_team_shot_profile(team_id, preferred_side, league_id=None):
 
     finished = [e for e in events["results"] if e.get("status") == "finished"]
     finished.sort(key=lambda x: x.get("event_date", ""), reverse=True)
-    fields = ("total_shots", "shots_on_target", "shots_off_target", "blocked_shots", "hit_woodwork")
+    fields = (
+        "total_shots", "shots_on_target", "shots_off_target", "blocked_shots",
+        "hit_woodwork", "corner_kicks", "yellow_cards",
+    )
     observations = {field: [] for field in fields}
     observations["xg"] = []
 
@@ -197,10 +200,50 @@ def line_probabilities(mean, variance, line, samples):
     under = 0.5 * (1 + math.erf(z / math.sqrt(2)))
     return 1 - under, under
 
-def get_players_sot_history(team_id):
+
+def _attacking_absences(payload, side):
+    """Compte seulement les absences offensives explicitement identifiées."""
+    if not isinstance(payload, dict):
+        return 0
+    candidates = payload.get(side)
+    if candidates is None and isinstance(payload.get("unavailable_players"), dict):
+        candidates = payload["unavailable_players"].get(side)
+    if not isinstance(candidates, list):
+        return 0
+
+    total = 0
+    attacking_positions = {"f", "fw", "m", "mf", "attacker", "forward", "midfielder"}
+    for player in candidates:
+        if not isinstance(player, dict):
+            continue
+        status = str(player.get("availability", player.get("status", ""))).lower()
+        position = str(player.get("position", player.get("role", ""))).lower()
+        if status in {"injured", "suspended", "doubtful", "unavailable"} and position in attacking_positions:
+            total += 1
+    return total
+
+
+@lru_cache(maxsize=256)
+def get_event_availability(event_id):
+    """Récupère les absences sans faire échouer une analyse si l'endpoint est vide."""
+    return api_get(f"events/{event_id}/availability/") or {}
+
+
+def attacking_shot_adjustment(event, side):
+    """Réduit prudemment le volume attendu si une absence offensive est certaine."""
+    payload = event.get("unavailable_players")
+    if not payload:
+        payload = get_event_availability(event.get("id"))
+    missing = _attacking_absences(payload, side)
+    return -min(2.0, missing * 0.35)
+
+def get_players_sot_history(team_id, league_id=None):
     today = datetime.now().strftime("%Y-%m-%d")
     past = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-    events = api_get(f"events/?team_id={team_id}&date_from={past}&date_to={today}")
+    league_filter = f"&league_id={league_id}" if league_id else ""
+    events = api_get(
+        f"events/?team_id={team_id}&date_from={past}&date_to={today}{league_filter}"
+    )
     if not events or not events.get("results"):
         return {}
 
@@ -217,7 +260,10 @@ def get_players_sot_history(team_id):
                     name = p.get("player_name", "")
                     if not name or name == "Inconnu":
                         continue
-                    sots = p.get("shots_on_target", 0)
+                    try:
+                        sots = float(p.get("shots_on_target", 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
                     if name not in player_history:
                         player_history[name] = []
                     player_history[name].append((sots, weight))
@@ -227,7 +273,12 @@ def get_players_sot_history(team_id):
         if len(history) >= 3:
             total_w = sum(w for v, w in history)
             avg = sum(v * w for v, w in history) / total_w
-            weighted_players[name] = avg
+            variance = sum(w * (v - avg) ** 2 for v, w in history) / total_w
+            weighted_players[name] = {
+                "average": avg,
+                "variance": variance,
+                "samples": len(history),
+            }
 
     return weighted_players
 
@@ -291,8 +342,8 @@ def main():
             # facteur arbitraire 8,5 qui pouvait déformer le total attendu.
             h_shot_stat = h_profile["total_shots"]
             a_shot_stat = a_profile["total_shots"]
-            h_val = h_shot_stat["average"]
-            a_val = a_shot_stat["average"]
+            h_val = max(0.0, h_shot_stat["average"] + attacking_shot_adjustment(m, "home"))
+            a_val = max(0.0, a_shot_stat["average"] + attacking_shot_adjustment(m, "away"))
             match_total = h_val + a_val
             match_variance = h_shot_stat["variance"] + a_shot_stat["variance"]
             sample_count = min(h_shot_stat["samples"], a_shot_stat["samples"])
@@ -330,15 +381,18 @@ def main():
         # ============================================
         # 2. TIRS CADRÉS ÉQUIPES (D/E)
         # ============================================
-        h_sot = get_team_stats(home_id, "shots_on_target", preferred_side="home")
-        a_sot = get_team_stats(away_id, "shots_on_target", preferred_side="away")
-
-        if h_sot and a_sot:
-            for team, avg, side in [(home_name, h_sot[0], "home"), (away_name, a_sot[0], "away")]:
+        if h_profile.get("shots_on_target") and a_profile.get("shots_on_target"):
+            for team, profile, side in [
+                (home_name, h_profile["shots_on_target"], "home"),
+                (away_name, a_profile["shots_on_target"], "away"),
+            ]:
+                avg = profile["average"]
                 if avg < 12:
                     best_prob, best_line, best_cote = 0, None, None
                     for line in [3.5, 4.5]:
-                        prob = poisson_plus_de(avg, line)
+                        prob, _ = line_probabilities(
+                            avg, profile["variance"], line, profile["samples"]
+                        )
                         if prob >= 0.59 and prob > best_prob:
                             best_prob, best_line, best_cote = prob, line, round(1 / prob * 1.04, 2)
                     if best_line:
@@ -350,57 +404,62 @@ def main():
         # ============================================
         # 3. CORNERS (D/E)
         # ============================================
-        h_corners = get_team_stats(home_id, "corner_kicks", preferred_side="home")
-        a_corners = get_team_stats(away_id, "corner_kicks", preferred_side="away")
-
-        if h_corners and a_corners:
-            total_corners = h_corners[0] + a_corners[0]
+        if h_profile.get("corner_kicks") and a_profile.get("corner_kicks"):
+            h_corners = h_profile["corner_kicks"]
+            a_corners = a_profile["corner_kicks"]
+            total_corners = h_corners["average"] + a_corners["average"]
+            corners_variance = h_corners["variance"] + a_corners["variance"]
+            corners_samples = min(h_corners["samples"], a_corners["samples"])
             if 7 < total_corners < 22:
-                best_prob, best_line, best_cote = 0, None, None
-                for line in [9.5, 10.5, 11.5]:
-                    prob = poisson_plus_de(total_corners, line)
-                    cote_estimee = round(1 / prob * 1.04, 2)
-                    if prob >= 0.61 and cote_estimee >= 1.28 and prob > best_prob:
-                        best_prob, best_line, best_cote = prob, line, cote_estimee
-                if best_line:
+                line = 9.5
+                best_prob, _ = line_probabilities(
+                    total_corners, corners_variance, line, corners_samples
+                )
+                best_cote = round(1 / best_prob * 1.04, 2) if best_prob else None
+                if best_prob >= 0.61 and best_cote >= 1.28:
                     picks_corners.append(
                         f"🚩 {match_title}\n"
                         f"  Corners attendus : {total_corners:.1f}\n"
-                        f"  • +{best_line} corners : {best_prob:.0%} (Cote min : {best_cote})"
+                        f"  • +9,5 corners : {best_prob:.0%} (Cote estimée : {best_cote})"
                     )
 
         # ============================================
         # 4. CARTONS (D/E)
         # ============================================
-        h_yellow = get_team_stats(home_id, "yellow_cards", preferred_side="home")
-        a_yellow = get_team_stats(away_id, "yellow_cards", preferred_side="away")
-
-        if h_yellow and a_yellow:
-            total_cards = h_yellow[0] + a_yellow[0]
+        if h_profile.get("yellow_cards") and a_profile.get("yellow_cards"):
+            h_yellow = h_profile["yellow_cards"]
+            a_yellow = a_profile["yellow_cards"]
+            total_cards = h_yellow["average"] + a_yellow["average"]
+            cards_variance = h_yellow["variance"] + a_yellow["variance"]
+            cards_samples = min(h_yellow["samples"], a_yellow["samples"])
             if 2 < total_cards < 11:
-                best_prob, best_line, best_cote = 0, None, None
-                for line in [4.5, 5.5, 6.5]:
-                    prob = poisson_plus_de(total_cards, line)
-                    cote_estimee = round(1 / prob * 1.04, 2)
-                    if prob >= 0.56 and cote_estimee >= 1.38 and prob > best_prob:
-                        best_prob, best_line, best_cote = prob, line, cote_estimee
-                if best_line:
+                line = 4.5
+                best_prob, _ = line_probabilities(
+                    total_cards, cards_variance, line, cards_samples
+                )
+                best_cote = round(1 / best_prob * 1.04, 2) if best_prob else None
+                if best_prob >= 0.56 and best_cote >= 1.38:
                     picks_cartons.append(
                         f"🟨 {match_title}\n"
                         f"  Cartons attendus : {total_cards:.1f}\n"
-                        f"  • +{best_line} cartons : {best_prob:.0%} (Cote min : {best_cote})"
+                        f"  • +4,5 cartons : {best_prob:.0%} (Cote estimée : {best_cote})"
                     )
 
         # ============================================
         # 5. JOUEURS (inchangé pour l’instant)
         # ============================================
-        h_players = get_players_sot_history(home_id)
-        a_players = get_players_sot_history(away_id)
+        h_players = get_players_sot_history(home_id, l_id)
+        a_players = get_players_sot_history(away_id, l_id)
         all_players = {**h_players, **a_players}
 
-        for p_name, avg_sots in all_players.items():
-            prob_05 = poisson_plus_de(avg_sots, 0.5)
-            prob_15 = poisson_plus_de(avg_sots, 1.5)
+        for p_name, player_profile in all_players.items():
+            avg_sots = player_profile["average"]
+            prob_05, _ = line_probabilities(
+                avg_sots, player_profile["variance"], 0.5, player_profile["samples"]
+            )
+            prob_15, _ = line_probabilities(
+                avg_sots, player_profile["variance"], 1.5, player_profile["samples"]
+            )
 
             if prob_05 >= 0.62:
                 cote = round(1 / prob_05 * 1.04, 2)

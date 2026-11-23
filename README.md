@@ -14,6 +14,8 @@ Les probabilités et cotes affichées par le script sont des **estimations du mo
 
 Pour les tirs totaux, la ligne principale est désormais séparée en deux marchés complémentaires : **plus de 27 tirs** (au moins 27) et **moins de 27 tirs** (au plus 26). Le bot retient le côté dont la probabilité estimée est la plus élevée, sous réserve du seuil de confiance.
 
+Les lignes suivies explicitement sont `+27/-27 tirs`, `+9,5 corners` et `+4,5 cartons`. Les tirs cadrés équipes utilisent les lignes `+3,5` et `+4,5`, tandis que les tirs cadrés joueurs utilisent `+0,5` et `+1,5`.
+
 ## Secrets GitHub Actions
 
 - `BZZOIRO_TOKEN` : jeton d'accès à l'API Bzzoiro.
@@ -46,6 +48,6 @@ Le workflow se lance quotidiennement selon sa planification ou manuellement avec
 
 Le bot ne conserve actuellement pas d'historique local des sélections ni de rapport de ROI par marché. Les résultats doivent donc être suivis séparément avant d'activer ou de renforcer un marché. Les erreurs d'API sont traitées de manière défensive ; une absence de données peut conduire à l'absence de sélection.
 
-Les réponses API sont mises en cache pendant l'exécution afin d'éviter de redemander plusieurs fois les mêmes événements et statistiques. Le modèle des tirs utilise les moyennes pondérées des dix derniers matchs disponibles, séparées domicile/extérieur, ainsi que la variance historique des tirs. Il utilise une approximation normale lorsque l'échantillon est suffisant et revient à Poisson avec peu de données. Les champs `total_shots`, `shots_on_target`, `shots_off_target`, `blocked_shots`, `hit_woodwork` et `xg` sont lus lorsqu'ils sont disponibles ; `xg` reste une information complémentaire et n'est pas converti artificiellement en nombre de tirs.
+Les réponses API sont mises en cache pendant l'exécution afin d'éviter de redemander plusieurs fois les mêmes événements et statistiques. Le modèle des tirs utilise les moyennes pondérées des dix derniers matchs disponibles, séparées domicile/extérieur, ainsi que la variance historique des tirs. Il utilise une approximation normale lorsque l'échantillon est suffisant et revient à Poisson avec peu de données. Les champs `total_shots`, `shots_on_target`, `shots_off_target`, `blocked_shots`, `hit_woodwork` et `xg` sont lus lorsqu'ils sont disponibles ; `xg` reste une information complémentaire et n'est pas converti artificiellement en nombre de tirs. Les absences offensives explicitement identifiées par `availability` sont prises en compte avec une correction plafonnée, tandis qu'une absence sans poste connu est ignorée pour éviter de pénaliser à tort une équipe.
 
-Une calibration empirique par championnat, équipe et cotes réelles nécessitera encore un historique de résultats. Les seuils de confiance doivent donc être réévalués après plusieurs dizaines de matchs résolus.
+Une calibration empirique par championnat, équipe et cotes réelles nécessitera encore un historique de résultats. Les seuils de confiance doivent donc être réévalués après plusieurs dizaines de matchs résolus. Les lignes corners, cartons et tirs cadrés utilisent maintenant le même profil pondéré et la même gestion de variance que les tirs totaux.
