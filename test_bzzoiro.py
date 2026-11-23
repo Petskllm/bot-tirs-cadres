@@ -1,6 +1,7 @@
 import os
 import requests
 import math
+import time
 from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
@@ -18,8 +19,7 @@ def api_get(endpoint):
     try:
         r = requests.get(f"{BASE}/{endpoint}", headers=headers, timeout=15)
         return r.json() if r.status_code == 200 else None
-    except Exception as e:
-        print(f"Erreur API: {e}")
+    except:
         return None
 
 def poisson_plus_de(lam, k):
@@ -41,7 +41,7 @@ def get_team_stats(team_id, stat_type):
     if not events or not events.get("results"): return []
     
     finished = [e for e in events["results"] if e.get("status") == "finished"]
-    finished.sort(key=lambda x: x.get("event_date", x.get("date", "")), reverse=True)
+    finished.sort(key=lambda x: x.get("event_date", ""), reverse=True)
     
     vals = []
     for e in finished[:5]:
@@ -61,7 +61,7 @@ def get_players_sot_history(team_id):
     if not events or not events.get("results"): return {}
     
     finished = [e for e in events["results"] if e.get("status") == "finished"]
-    finished.sort(key=lambda x: x.get("event_date", x.get("date", "")), reverse=True)
+    finished.sort(key=lambda x: x.get("event_date", ""), reverse=True)
     
     player_history = {}
     for e in finished[:5]:
@@ -80,25 +80,21 @@ def main():
     
     events = api_get(f"events/?date_from={today}&date_to={today}")
     if not events or not events.get("results"):
-        send_telegram(f"🤷‍♂️ Aucun match dans l'API pour le {today}.\nVérifie que la date est correcte ou que l'API répond.")
+        send_telegram(f"🤷‍♂️ Aucun match dans l'API pour le {today}.")
         return
     
     matches = events["results"]
-    
-    # Diagnostic : compter les statuts
-    status_counts = {}
-    for m in matches:
-        s = m.get("status", "inconnu")
-        status_counts[s] = status_counts.get(s, 0) + 1
     
     picks_total = []
     picks_cadres_eq = []
     picks_cadres_joueurs = []
     matchs_analyses = 0
+    start_time = time.time()
     
     for m in matches:
-        # Accepter upcoming ET scheduled (au cas où)
-        if m.get("status") not in ("upcoming", "scheduled"): continue
+        # Statut exact de Bzzoiro
+        if m.get("status") != "notstarted": continue
+            
         matchs_analyses += 1
             
         home_name = m.get("home_team")
@@ -152,11 +148,16 @@ def main():
         
         if lines_joueurs:
             picks_cadres_joueurs.append(f"⚽ {home_name} — {away_name}\n" + "\n".join(lines_joueurs[:5]))
+            
+        # Sécurité anti-timeout GitHub Actions (limite 6 minutes)
+        # On s'arrête après 15 matchs max ou 5 minutes de traitement
+        if matchs_analyses >= 15 or (time.time() - start_time) > 300:
+            print("⚠️ Limite de sécurité atteinte (15 matchs max ou 5 minutes).")
+            break
 
-    # --- MESSAGE TELEGRAM AVEC DIAGNOSTIC ---
+    # --- MESSAGE TELEGRAM ---
     msg = f"🎯 PRONOS TIRS (Bzzoiro)\n📅 {datetime.now().strftime('%d/%m/%Y')}\n"
-    msg += f"🔎 Matchs à venir analysés : {matchs_analyses}\n"
-    msg += f"📊 Statuts trouvés : {status_counts}\n\n"
+    msg += f"🔎 Matchs à venir analysés : {matchs_analyses}\n\n"
     
     if picks_total:
         msg += "📈 TIRS TOTAUX DANS LE MATCH :\n" + "\n\n".join(picks_total[:4]) + "\n\n"
