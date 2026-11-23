@@ -15,7 +15,7 @@ if not all([TOKEN, TG_TOKEN, TG_CHAT]):
     print("❌ Secrets manquants")
     exit(1)
 
-# --- FILTRE DES CHAMPIONNATS (Mots-clés à chercher dans le nom) ---
+# --- FILTRE DES CHAMPIONNATS ---
 LIGUES_AUTORISEES = [
     "premier league", "la liga", "laliga", "serie a", "bundesliga", "ligue 1",
     "champions league", "europa league", "conference league",
@@ -109,14 +109,13 @@ def get_players_sot_history(team_id):
 
 def main():
     print("⏳ Récupération de la liste des ligues...")
-    # 1. ON CRÉE L'ANNUAIRE DES LIGUES (ID -> NOM)
     league_map = {}
     all_leagues = api_get("leagues/")
     if all_leagues and "results" in all_leagues:
         for l in all_leagues["results"]:
             league_map[l["id"]] = str(l.get("name", "")).lower()
 
-    print("⏳ Analyse globale (Top Championnats + xG + Joueurs)...")
+    print("⏳ Analyse globale...")
     today = datetime.now().strftime("%Y-%m-%d")
     
     events = api_get(f"events/?date_from={today}&date_to={today}")
@@ -128,9 +127,11 @@ def main():
     
     picks_total = []
     picks_cadres_eq = []
-    picks_xg = []
     picks_cadres_joueurs = []
-    all_picks_for_combo = [] 
+    picks_corners = [] 
+    picks_cartons = [] 
+    
+    combo_pool_totals = [] 
     
     matchs_analyses = 0
     matchs_ignores = 0
@@ -139,14 +140,12 @@ def main():
     for m in matches:
         if m.get("status") != "notstarted": continue
         
-        # 2. ON TRADUIT L'ID EN NOM POUR LE FILTRE
         l_id = m.get("league_id")
         league_name = league_map.get(l_id, "")
         
         if not any(l in league_name for l in LIGUES_AUTORISEES):
             matchs_ignores += 1
             continue
-        # ----------------------------------------
 
         matchs_analyses += 1
         fid = m.get("id")
@@ -165,11 +164,12 @@ def main():
                 best_prob, best_line, best_cote = 0, None, None
                 for line in [27.5, 28.5, 29.5]:
                     prob = poisson_plus_de(match_total, line)
-                    if prob >= 0.60 and prob > best_prob:
-                        best_prob, best_line, best_cote = prob, line, round(1/prob*1.05, 2)
+                    cote_estimee = round(1/prob*1.05, 2)
+                    if prob >= 0.55 and cote_estimee >= 1.30 and prob > best_prob:
+                        best_prob, best_line, best_cote = prob, line, cote_estimee
                 if best_line:
                     picks_total.append(f"⚽ {match_title}\n  Total attendu : {match_total:.1f}\n  • +{best_line} tirs : {best_prob:.0%} (Cote min : {best_cote})")
-                    all_picks_for_combo.append({"match_id": fid, "match_name": match_title, "desc": f"+{best_line} tirs (Total)", "prob": best_prob, "cote": best_cote})
+                    combo_pool_totals.append({"match_id": fid, "match_name": match_title, "desc": f"+{best_line} tirs (Total)", "prob": best_prob, "cote": best_cote})
 
         # 2. TIRS CADRÉS ÉQUIPES
         h_sot = get_team_stats(home_id, "shots_on_target")
@@ -185,23 +185,40 @@ def main():
                             best_prob, best_line, best_cote = prob, line, round(1/prob*1.05, 2)
                     if best_line:
                         picks_cadres_eq.append(f"⚽ {match_title}\n  • {team} +{best_line} : {best_prob:.0%} (Cote min : {best_cote})")
-                        all_picks_for_combo.append({"match_id": fid, "match_name": match_title, "desc": f"{team} +{best_line} (Cadrés)", "prob": best_prob, "cote": best_cote})
 
-        # 3. xG (Seulement si le match a des xG selon l'API !)
-        if m.get("has_xg", False):
-            h_xg = get_team_stats(home_id, "xg")
-            a_xg = get_team_stats(away_id, "xg")
-            if h_xg and a_xg:
-                h_xg_avg, a_xg_avg = h_xg[0], a_xg[0]
-                if h_xg_avg < 4.0 and a_xg_avg < 4.0:
-                    total_shots_estimated = (h_xg_avg * 8 + 5) + (a_xg_avg * 8 + 5)
-                    prob_xg = poisson_plus_de(total_shots_estimated, 27.5)
-                    if prob_xg >= 0.65:
-                        cote = round(1/prob_xg*1.05, 2)
-                        picks_xg.append(f"⚽ {match_title}\n  xG : {h_xg_avg + a_xg_avg:.2f}\n  • +27,5 tirs (xG) : {prob_xg:.0%} (Cote min : {cote})")
-                        all_picks_for_combo.append({"match_id": fid, "match_name": match_title, "desc": "+27.5 tirs (Basé xG)", "prob": prob_xg, "cote": cote})
+        # 3. CORNERS (Lignes 9.5, 10.5, 11.5 minimum)
+        h_corners = get_team_stats(home_id, "corner_kicks")
+        a_corners = get_team_stats(away_id, "corner_kicks")
+        if h_corners and a_corners:
+            total_corners = h_corners[0] + a_corners[0]
+            if 5 < total_corners < 25:
+                best_prob, best_line, best_cote = 0, None, None
+                # Lignes mises à jour selon ton bookmaker (9.5 minimum)
+                for line in [9.5, 10.5, 11.5]:
+                    prob = poisson_plus_de(total_corners, line)
+                    cote_estimee = round(1/prob*1.05, 2)
+                    if prob >= 0.60 and cote_estimee >= 1.30 and prob > best_prob:
+                        best_prob, best_line, best_cote = prob, line, cote_estimee
+                if best_line:
+                    picks_corners.append(f"🚩 {match_title}\n  Corners attendus : {total_corners:.1f}\n  • +{best_line} corners : {best_prob:.0%} (Cote min : {best_cote})")
 
-        # 4. JOUEURS
+        # 4. CARTONS (Lignes 4.5, 5.5, 6.5 minimum)
+        h_yellow = get_team_stats(home_id, "yellow_cards")
+        a_yellow = get_team_stats(away_id, "yellow_cards")
+        if h_yellow and a_yellow:
+            total_cards = h_yellow[0] + a_yellow[0]
+            if 1 < total_cards < 12:
+                best_prob, best_line, best_cote = 0, None, None
+                # Lignes mises à jour selon ton bookmaker (4.5 minimum)
+                for line in [4.5, 5.5, 6.5]:
+                    prob = poisson_plus_de(total_cards, line)
+                    cote_estimee = round(1/prob*1.05, 2)
+                    if prob >= 0.55 and cote_estimee >= 1.40 and prob > best_prob:
+                        best_prob, best_line, best_cote = prob, line, cote_estimee
+                if best_line:
+                    picks_cartons.append(f"🟨 {match_title}\n  Cartons attendus : {total_cards:.1f}\n  • +{best_line} cartons : {best_prob:.0%} (Cote min : {best_cote})")
+
+        # 5. JOUEURS
         h_players = get_players_sot_history(home_id)
         a_players = get_players_sot_history(away_id)
         all_players = {**h_players, **a_players}
@@ -213,22 +230,20 @@ def main():
             if prob_05 >= 0.60:
                 cote = round(1/prob_05*1.05, 2)
                 picks_cadres_joueurs.append(f"⚽ {match_title}\n  • {p_name} +0,5 : {prob_05:.0%} (Cote min : {cote})")
-                all_picks_for_combo.append({"match_id": fid, "match_name": match_title, "desc": f"{p_name} +0.5 (Cadrés)", "prob": prob_05, "cote": cote})
             elif prob_15 >= 0.50:
                 cote = round(1/prob_15*1.05, 2)
                 picks_cadres_joueurs.append(f"⚽ {match_title}\n  • {p_name} +1,5 : {prob_15:.0%} (Cote min : {cote})")
-                all_picks_for_combo.append({"match_id": fid, "match_name": match_title, "desc": f"{p_name} +1.5 (Cadrés)", "prob": prob_15, "cote": cote})
 
         if matchs_analyses >= 15 or (time.time() - start_time) > 300:
             break
 
-    # --- COMBINÉ SOLIDE ---
-    all_picks_for_combo.sort(key=lambda x: -x["prob"])
+    # --- CONSTRUCTION DU COMBINÉ (TIRS TOTAUX UNIQUEMENT) ---
+    combo_pool_totals.sort(key=lambda x: -x["prob"])
     combo_picks = []
     used_matches = set()
     total_cote = 1.0
     
-    for pick in all_picks_for_combo:
+    for pick in combo_pool_totals:
         if pick["match_id"] not in used_matches:
             combo_picks.append(pick)
             used_matches.add(pick["match_id"])
@@ -241,23 +256,29 @@ def main():
     msg += f"🔎 Matchs analysés : {matchs_analyses} (Top ligues)\n"
     msg += f"🚫 Autres matchs ignorés : {matchs_ignores}\n\n"
     
-    if combo_picks and len(combo_picks) >= 3:
-        msg += "🔥 **COMBINÉ SOLIDE DU JOUR (Max 5 sélections)** 🔥\n"
+    if len(combo_picks) >= 3:
+        msg += "🔥 **COMBINÉ TIRS TOTAUX (Max 5 sélections)** 🔥\n"
         for i, pick in enumerate(combo_picks, 1):
             msg += f"{i}. {pick['match_name']}\n   • {pick['desc']} : {pick['prob']:.0%} (Cote : {pick['cote']})\n"
         msg += f"💰 Cote totale estimée : {round(total_cote, 2)}\n"
-        msg += "⚠️ _1 seul pari par match pour éviter la corrélation._\n\n"
+        msg += "⚠️ _Uniquement des paris sur le total de tirs (27+)._ \n\n"
+    elif picks_total:
+        msg += "⚠️ _Pas assez de matchs (3 minimum) pour faire un combiné aujourd'hui._\n\n"
     
     if picks_total:
-        msg += "📈 TIRS TOTAUX :\n" + "\n\n".join(picks_total[:2]) + "\n\n"
-    if picks_cadres_eq:
-        msg += "🎯 TIRS CADRÉS (Équipes) :\n" + "\n\n".join(picks_cadres_eq[:2]) + "\n\n"
-    if picks_xg:
-        msg += "🧠 ANALYSE xG :\n" + "\n\n".join(picks_xg[:2]) + "\n\n"
-    if picks_cadres_joueurs:
-        msg += "👤 TIRS CADRÉS (Joueurs) :\n" + "\n\n".join(picks_cadres_joueurs[:3]) + "\n\n"
+        msg += "📈 TIRS TOTAUX (Individuels) :\n" + "\n\n".join(picks_total[:4]) + "\n\n"
         
-    if not any([picks_total, picks_cadres_eq, picks_xg, picks_cadres_joueurs]):
+    if picks_corners:
+        msg += "🚩 CORNERS (Total du match) :\n" + "\n\n".join(picks_corners[:3]) + "\n\n"
+    if picks_cartons:
+        msg += "🟨 CARTONS (Total du match) :\n" + "\n\n".join(picks_cartons[:3]) + "\n\n"
+
+    if picks_cadres_eq:
+        msg += "🎯 TIRS CADRÉS (Équipes - 2ème Book) :\n" + "\n\n".join(picks_cadres_eq[:2]) + "\n\n"
+    if picks_cadres_joueurs:
+        msg += "👤 TIRS CADRÉS (Joueurs - 1er Book) :\n" + "\n\n".join(picks_cadres_joueurs[:3]) + "\n\n"
+        
+    if not any([picks_total, picks_cadres_eq, picks_cadres_joueurs, picks_corners, picks_cartons]):
         msg += "❌ Aucune sélection ne passe les filtres dans ces grands championnats aujourd'hui."
         
     send_telegram(msg)
