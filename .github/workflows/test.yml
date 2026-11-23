@@ -23,4 +23,6 @@ jobs:
       - name: Lancer le script
         env:
           BZZOIRO_TOKEN: ${{ secrets.BZZOIRO_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python test_bzzoiro.py
