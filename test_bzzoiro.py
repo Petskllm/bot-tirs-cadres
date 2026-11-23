@@ -53,32 +53,34 @@ def get_team_stats(team_id, stat_type):
                 vals.append(val)
     return vals
 
-def get_players_last_match(team_id):
-    """Récupère les tirs cadrés des joueurs lors du dernier match de l'équipe."""
+def get_players_sot_history(team_id):
+    """Récupère l'historique des tirs cadrés des joueurs sur les 5 derniers matchs."""
     today = datetime.now().strftime("%Y-%m-%d")
-    past = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    past = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
     events = api_get(f"events/?team_id={team_id}&date_from={past}&date_to={today}")
-    if not events or not events.get("results"): return []
+    if not events or not events.get("results"): return {}
     
     finished = [e for e in events["results"] if e.get("status") == "finished"]
     finished.sort(key=lambda x: x.get("date", ""), reverse=True)
-    if not finished: return []
     
-    last_event = finished[0]
-    stats = api_get(f"events/{last_event['id']}/player-stats/")
-    if not stats or "player_stats" not in stats: return []
+    player_history = {} # Dictionnaire {nom_joueur: [liste_des_sots]}
     
-    players = []
-    for p in stats["player_stats"]:
-        # On ne garde que les titulaires (60+ min) de l'équipe concernée
-        if p.get("minutes_played", 0) >= 60 and p.get("team_id") == team_id:
-            name = p.get("player_name", "Joueur")
-            sots = p.get("shots_on_target", 0)
-            players.append((name, sots))
-    return players
+    # On regarde les 5 derniers matchs de l'équipe
+    for e in finished[:5]:
+        stats = api_get(f"events/{e['id']}/player-stats/")
+        if stats and "player_stats" in stats:
+            for p in stats["player_stats"]:
+                # On garde les joueurs de l'équipe qui ont joué au moins 45 min
+                if p.get("team_id") == team_id and p.get("minutes_played", 0) >= 45:
+                    name = p.get("player_name", "Inconnu")
+                    sots = p.get("shots_on_target", 0)
+                    if name not in player_history:
+                        player_history[name] = []
+                    player_history[name].append(sots)
+    return player_history
 
 def main():
-    print("⏳ Analyse globale (Match, Équipes, Joueurs)...")
+    print("⏳ Analyse globale en cours (ça peut prendre 2-3 min)...")
     today = datetime.now().strftime("%Y-%m-%d")
     
     events = api_get(f"events/?date_from={today}&date_to={today}")
@@ -127,35 +129,44 @@ def main():
                 picks_cadres_eq.append(f"⚽ {home_name} — {away_name}\n" + "\n".join(lines_eq))
 
         # --- 3. TIRS CADRÉS JOUEURS ---
-        h_players = get_players_last_match(home_id)
-        a_players = get_players_last_match(away_id)
+        h_players = get_players_sot_history(home_id)
+        a_players = get_players_sot_history(away_id)
         
         lines_joueurs = []
-        for p_name, p_sots in h_players + a_players:
-            # Si le joueur a fait au moins 1 tir cadré au dernier match
-            if p_sots >= 1:
-                # On donne une estimation indicative de 0,5 et 1,5
-                # (Une vraie analyse demanderait l'historique complet du joueur)
-                lines_joueurs.append(f"  • {p_name} : +0,5 et +1,5 tirs cadrés")
+        # On fusionne les joueurs des deux équipes
+        all_players = {**h_players, **a_players}
+        
+        for p_name, sots_list in all_players.items():
+            if len(sots_list) >= 3: # Au moins 3 matchs joués
+                avg_sots = sum(sots_list) / len(sots_list)
+                prob_05 = poisson_plus_de(avg_sots, 0.5)
+                prob_15 = poisson_plus_de(avg_sots, 1.5)
+                
+                if prob_05 >= 0.60:
+                    cote_min = round(1/prob_05 * 1.05, 2)
+                    lines_joueurs.append(f"  • {p_name} +0,5 : {prob_05:.0%} (Cote min : {cote_min})")
+                if prob_15 >= 0.50: # Pour le 1,5 on peut descendre un peu le seuil
+                    cote_min = round(1/prob_15 * 1.05, 2)
+                    lines_joueurs.append(f"  • {p_name} +1,5 : {prob_15:.0%} (Cote min : {cote_min})")
         
         if lines_joueurs:
-            # On limite à 4 joueurs par match pour ne pas surcharger le message
-            picks_cadres_joueurs.append(f"⚽ {home_name} — {away_name}\n" + "\n".join(lines_joueurs[:4]))
+            # On limite à 5 joueurs par match pour ne pas surcharger
+            picks_cadres_joueurs.append(f"⚽ {home_name} — {away_name}\n" + "\n".join(lines_joueurs[:5]))
 
     # --- 4. CONSTRUCTION DU MESSAGE TELEGRAM ---
     msg = f"🎯 PRONOS TIRS (Bzzoiro)\n📅 {datetime.now().strftime('%d/%m/%Y')}\n\n"
     
     if picks_total:
         msg += "📈 TIRS TOTAUX DANS LE MATCH :\n"
-        msg += "\n\n".join(picks_total[:5]) + "\n\n"
+        msg += "\n\n".join(picks_total[:4]) + "\n\n"
         
     if picks_cadres_eq:
         msg += "🎯 TIRS CADRÉS PAR ÉQUIPE :\n"
-        msg += "\n\n".join(picks_cadres_eq[:5]) + "\n\n"
+        msg += "\n\n".join(picks_cadres_eq[:4]) + "\n\n"
         
     if picks_cadres_joueurs:
-        msg += "👤 TIRS CADRÉS PAR JOUEUR (D'après le dernier match) :\n"
-        msg += "\n\n".join(picks_cadres_joueurs[:5]) + "\n\n"
+        msg += "👤 TIRS CADRÉS PAR JOUEUR :\n"
+        msg += "\n\n".join(picks_cadres_joueurs[:4]) + "\n\n"
         
     if not picks_total and not picks_cadres_eq and not picks_cadres_joueurs:
         msg += "❌ Aucun match ne remplit les conditions aujourd'hui."
