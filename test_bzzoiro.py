@@ -35,7 +35,7 @@ def send_telegram(msg):
                       json={"chat_id": TG_CHAT, "text": msg[i:i+4000]})
 
 def get_team_stats(team_id, stat_type):
-    """Récupère les stats avec pondération temporelle (les matchs récents comptent plus)."""
+    """Récupère les stats avec pondération temporelle."""
     today = datetime.now().strftime("%Y-%m-%d")
     past = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     events = api_get(f"events/?team_id={team_id}&date_from={past}&date_to={today}")
@@ -45,25 +45,33 @@ def get_team_stats(team_id, stat_type):
     finished.sort(key=lambda x: x.get("event_date", ""), reverse=True)
     
     weighted_vals = []
-    for idx, e in enumerate(finished[:6]): # On regarde 6 matchs
+    for idx, e in enumerate(finished[:6]):
         st = api_get(f"events/{e['id']}/stats/")
         if st and st.get("stats"):
             is_home = (e["home_team_id"] == team_id)
             side = "home" if is_home else "away"
-            val = st["stats"].get(side, {}).get(stat_type)
             
-            # Si la stat n'existe pas, on l'ignore
+            # --- CORRECTION ICI ---
+            # Si on cherche "xg", on doit aller chercher la valeur "actual" dans le dictionnaire
+            if stat_type == "xg":
+                xg_data = st["stats"].get(side, {}).get("xg")
+                if isinstance(xg_data, dict):
+                    val = xg_data.get("actual") # On prend la vraie valeur
+                else:
+                    val = xg_data
+            else:
+                val = st["stats"].get(side, {}).get(stat_type)
+            # ----------------------
+
             if val is not None:
-                # Pondération : Match 1 (x1.5), Match 2 (x1.4), Match 3 (x1.3)...
                 weight = max(1.0, 1.5 - (idx * 0.1))
                 weighted_vals.append((val, weight))
     
     if not weighted_vals: return []
     
-    # Calcul de la moyenne pondérée
     total_weight = sum(w for v, w in weighted_vals)
     weighted_avg = sum(v * w for v, w in weighted_vals) / total_weight
-    return [weighted_avg] # On renvoie une liste avec la moyenne pondérée
+    return [weighted_avg]
 
 def get_players_sot_history(team_id):
     """Historique des joueurs avec pondération temporelle."""
@@ -87,10 +95,9 @@ def get_players_sot_history(team_id):
                     if name not in player_history: player_history[name] = []
                     player_history[name].append((sots, weight))
                     
-    # Calcul de la moyenne pondérée pour chaque joueur
     weighted_players = {}
     for name, history in player_history.items():
-        if len(history) >= 3: # Au moins 3 matchs
+        if len(history) >= 3:
             total_w = sum(w for v, w in history)
             avg = sum(v * w for v, w in history) / total_w
             weighted_players[name] = avg
@@ -110,7 +117,7 @@ def main():
     
     picks_total = []
     picks_cadres_eq = []
-    picks_xg = [] # Nouveauté : Les opportunités basées sur les xG
+    picks_xg = []
     picks_cadres_joueurs = []
     matchs_analyses = 0
     start_time = time.time()
@@ -125,12 +132,12 @@ def main():
         home_id = m.get("home_team_id")
         away_id = m.get("away_team_id")
         
-        # 1. TIRS TOTAUX (avec sécurité : on ignore si > 50 tirs ou < 10 tirs en moyenne)
+        # 1. TIRS TOTAUX
         h_total = get_team_stats(home_id, "total_shots")
         a_total = get_team_stats(away_id, "total_shots")
         if h_total and a_total:
             match_total = h_total[0] + a_total[0]
-            if 10 < match_total < 50: # Sécurité anti-bug
+            if 10 < match_total < 50:
                 lines_tot = []
                 for line in [27.5, 28.5, 29.5]:
                     prob = poisson_plus_de(match_total, line)
@@ -139,12 +146,12 @@ def main():
                 if lines_tot:
                     picks_total.append(f"⚽ {home_name} — {away_name}\n  Total attendu : {match_total:.1f} tirs\n" + "\n".join(lines_tot))
 
-        # 2. TIRS CADRÉS ÉQUIPES (avec sécurité : on ignore si > 15 tirs cadrés)
+        # 2. TIRS CADRÉS ÉQUIPES
         h_sot = get_team_stats(home_id, "shots_on_target")
         a_sot = get_team_stats(away_id, "shots_on_target")
         if h_sot and a_sot:
             h_avg, a_avg = h_sot[0], a_sot[0]
-            if h_avg < 15 and a_avg < 15: # Sécurité anti-bug
+            if h_avg < 15 and a_avg < 15:
                 lines_eq = []
                 for line in [3.5, 4.5]:
                     p_h, p_a = poisson_plus_de(h_avg, line), poisson_plus_de(a_avg, line)
@@ -153,24 +160,20 @@ def main():
                 if lines_eq:
                     picks_cadres_eq.append(f"⚽ {home_name} — {away_name}\n" + "\n".join(lines_eq))
 
-        # 3. xG (EXPECTED GOALS) - Le vrai game changer
-        # On utilise les xG pour estimer le nombre de buts, et on en déduit les tirs attendus
+        # 3. xG
         h_xg = get_team_stats(home_id, "xg")
         a_xg = get_team_stats(away_id, "xg")
         if h_xg and a_xg:
             h_xg_avg, a_xg_avg = h_xg[0], a_xg[0]
-            if h_xg_avg < 4.0 and a_xg_avg < 4.0: # Sécurité (un xG moyen > 4 n'a pas de sens)
-                # Un xG élevé signifie beaucoup d'occasions, donc beaucoup de tirs probables
-                # On utilise une formule empirique : xG * 8 + 5 (environ 8 tirs pour 1 xG)
+            if h_xg_avg < 4.0 and a_xg_avg < 4.0:
                 total_shots_estimated = (h_xg_avg * 8 + 5) + (a_xg_avg * 8 + 5)
                 prob_xg = poisson_plus_de(total_shots_estimated, 27.5)
-                if prob_xg >= 0.65: # Seuil un peu plus haut car c'est une estimation
+                if prob_xg >= 0.65:
                     picks_xg.append(f"⚽ {home_name} — {away_name}\n  xG Attendus : {h_xg_avg + a_xg_avg:.2f}\n  • +27,5 tirs estimés : {prob_xg:.0%} (Cote min : {round(1/prob_xg*1.05, 2)})")
 
-        # 4. TIRS CADRÉS JOUEURS
+        # 4. JOUEURS
         h_players = get_players_sot_history(home_id)
         a_players = get_players_sot_history(away_id)
-        
         lines_joueurs = []
         all_players = {**h_players, **a_players}
         
@@ -186,7 +189,6 @@ def main():
         if lines_joueurs:
             picks_cadres_joueurs.append(f"⚽ {home_name} — {away_name}\n" + "\n".join(lines_joueurs[:5]))
 
-        # Sécurité anti-timeout GitHub Actions
         if matchs_analyses >= 15 or (time.time() - start_time) > 300:
             break
 
