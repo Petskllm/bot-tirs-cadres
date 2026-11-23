@@ -11,7 +11,7 @@ BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
 
 if not all([TOKEN, TG_TOKEN, TG_CHAT]):
-    print("❌ Secrets manquants (BZZOIRO_TOKEN, TELEGRAM_TOKEN, CHAT_ID)")
+    print("❌ Secrets manquants")
     exit(1)
 
 def api_get(endpoint):
@@ -22,7 +22,6 @@ def api_get(endpoint):
         return None
 
 def poisson_plus_de(lam, k):
-    """Probabilité de faire PLUS de k (ex: k=2.5 -> 3 ou plus)"""
     if lam <= 0: return 0.0
     p = 0
     for i in range(int(k) + 1):
@@ -34,7 +33,6 @@ def send_telegram(msg):
                   json={"chat_id": TG_CHAT, "text": msg})
 
 def get_team_sot_history(team_id):
-    """Moyenne des tirs cadrés sur les 5 derniers matchs (équipe)."""
     today = datetime.now().strftime("%Y-%m-%d")
     past = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
     events = api_get(f"events/?team_id={team_id}&date_from={past}&date_to={today}")
@@ -54,99 +52,43 @@ def get_team_sot_history(team_id):
                 sots.append(val)
     return sots
 
-def get_players_sot_history(team_id):
-    """Moyenne des tirs cadrés des joueurs sur le dernier match."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    past = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    events = api_get(f"events/?team_id={team_id}&date_from={past}&date_to={today}")
-    if not events or not events.get("results"): return {}
-
-    # On prend le dernier match de l'équipe
-    finished = [e for e in events["results"] if e.get("status") == "finished"]
-    finished.sort(key=lambda x: x.get("date", ""), reverse=True)
-    if not finished: return {}
-    
-    last_match = finished[0]
-    stats = api_get(f"events/{last_match['id']}/player-stats/")
-    if not stats or "player_stats" not in stats: return {}
-    
-    # On ne garde que les joueurs qui ont joué au moins 60 min
-    players = {}
-    for p in stats["player_stats"]:
-        if p.get("minutes_played", 0) >= 60 and p.get("team_id") == team_id:
-            sots = p.get("shots_on_target", 0)
-            name = p.get("player_name", "Joueur inconnu")
-            players[name] = sots
-            
-    return players
-
 def main():
-    print("⏳ Analyse des matchs du jour (Équipes & Joueurs)...")
+    print("⏳ Analyse des matchs...")
     today = datetime.now().strftime("%Y-%m-%d")
     
     events = api_get(f"events/?date_from={today}&date_to={today}")
     if not events or not events.get("results"):
-        print("Aucun match aujourd'hui.")
+        send_telegram("🤷‍♂️ Aucun match programmé aujourd'hui.")
         return
     
     matches = events["results"]
-    print(f"✅ {len(matches)} matchs trouvés.")
-    
     team_picks = []
-    player_picks = []
     
     for m in matches:
         if m.get("status") != "scheduled": continue
             
         home_name = m.get("home_team")
-        away_name = m.get("away_team")
         home_id = m.get("home_team_id")
-        away_id = m.get("away_team_id")
         
-        # --- 1. ANALYSE ÉQUIPES ---
         h_sots = get_team_sot_history(home_id)
-        a_sots = get_team_sot_history(away_id)
-        
         if len(h_sots) >= 3:
             h_avg = sum(h_sots) / len(h_sots)
             prob = poisson_plus_de(h_avg, 2.5)
-            if prob >= 0.70:
-                team_picks.append(f"• {home_name} : +2,5 tirs cadrés ({prob:.0%})")
-                
-        if len(a_sots) >= 3:
-            a_avg = sum(a_sots) / len(a_sots)
-            prob = poisson_plus_de(a_avg, 2.5)
-            if prob >= 0.70:
-                team_picks.append(f"• {away_name} : +2,5 tirs cadrés ({prob:.0%})")
+            
+            if prob >= 0.60: # Seuil à 60%
+                # Calcul de la cote minimale (avec 5% de marge de sécurité)
+                cote_min = round(1 / prob * 1.05, 2)
+                team_picks.append(f"• {home_name} : +2,5 tirs cadrés ({prob:.0%})\n  💰 Cote min : {cote_min}")
 
-        # --- 2. ANALYSE JOUEURS ---
-        # On récupère les joueurs du dernier match de chaque équipe
-        h_players = get_players_sot_history(home_id)
-        a_players = get_players_sot_history(away_id)
-        
-        for p_name, p_sots in h_players.items():
-            # Si le joueur a fait au moins 1 tir cadré au dernier match
-            # On l'affiche avec une note indicative
-            if p_sots >= 1:
-                player_picks.append(f"• {p_name} ({home_name}) : +0,5 tir cadré")
-                
-        for p_name, p_sots in a_players.items():
-            if p_sots >= 1:
-                player_picks.append(f"• {p_name} ({away_name}) : +0,5 tir cadré")
-
-    # --- 3. ENVOI DU MESSAGE ---
     msg = f"🎯 PRONOS TIRS CADRÉS\n📅 {datetime.now().strftime('%d/%m/%Y')}\n\n"
     
     if team_picks:
-        msg += "🏆 ÉQUIPES :\n" + "\n".join(team_picks[:10]) + "\n\n"
-    if player_picks:
-        msg += "👤 JOUEURS (Dernier match) :\n" + "\n".join(player_picks[:10]) + "\n\n"
-        
-    if team_picks or player_picks:
-        send_telegram(msg)
-        print("✅ Message envoyé !")
+        msg += "🏆 SÉLECTIONS (Seuil 60%) :\n" + "\n".join(team_picks[:10])
     else:
-        print("❌ Aucun prono fiable aujourd'hui.")
+        msg += "❌ Aucune équipe n'atteint 60% aujourd'hui."
+        
+    send_telegram(msg)
+    print("✅ Message envoyé !")
 
 if __name__ == "__main__":
     main()
