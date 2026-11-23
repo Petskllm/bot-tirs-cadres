@@ -1,16 +1,26 @@
 name: Test Bzzoiro
-on: [push]
+
+on:
+  push:
+  workflow_dispatch:
+
 jobs:
   run-test:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install dependencies
+
+      - name: Installer les dépendances
         run: pip install requests
-      - name: Run script
+
+      - name: Lancer le script
         env:
           BZZOIRO_TOKEN: ${{ secrets.BZZOIRO_TOKEN }}
         run: python test_bzzoiro.py
