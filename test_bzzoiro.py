@@ -18,7 +18,8 @@ def api_get(endpoint):
     try:
         r = requests.get(f"{BASE}/{endpoint}", headers=headers, timeout=15)
         return r.json() if r.status_code == 200 else None
-    except:
+    except Exception as e:
+        print(f"Erreur API: {e}")
         return None
 
 def poisson_plus_de(lam, k):
@@ -40,7 +41,7 @@ def get_team_stats(team_id, stat_type):
     if not events or not events.get("results"): return []
     
     finished = [e for e in events["results"] if e.get("status") == "finished"]
-    finished.sort(key=lambda x: x.get("date", ""), reverse=True)
+    finished.sort(key=lambda x: x.get("event_date", x.get("date", "")), reverse=True)
     
     vals = []
     for e in finished[:5]:
@@ -60,7 +61,7 @@ def get_players_sot_history(team_id):
     if not events or not events.get("results"): return {}
     
     finished = [e for e in events["results"] if e.get("status") == "finished"]
-    finished.sort(key=lambda x: x.get("date", ""), reverse=True)
+    finished.sort(key=lambda x: x.get("event_date", x.get("date", "")), reverse=True)
     
     player_history = {}
     for e in finished[:5]:
@@ -74,25 +75,30 @@ def get_players_sot_history(team_id):
     return player_history
 
 def main():
-    print("⏳ Analyse globale en cours (ça peut prendre 2-3 min)...")
+    print("⏳ Analyse globale...")
     today = datetime.now().strftime("%Y-%m-%d")
     
     events = api_get(f"events/?date_from={today}&date_to={today}")
     if not events or not events.get("results"):
-        send_telegram("🤷‍♂️ Aucun match programmé aujourd'hui dans l'API.")
+        send_telegram(f"🤷‍♂️ Aucun match dans l'API pour le {today}.\nVérifie que la date est correcte ou que l'API répond.")
         return
     
     matches = events["results"]
     
+    # Diagnostic : compter les statuts
+    status_counts = {}
+    for m in matches:
+        s = m.get("status", "inconnu")
+        status_counts[s] = status_counts.get(s, 0) + 1
+    
     picks_total = []
     picks_cadres_eq = []
     picks_cadres_joueurs = []
-    
     matchs_analyses = 0
     
     for m in matches:
-        # CORRECTION ICI : on accepte 'scheduled' ET 'upcoming'
-        if m.get("status") not in ("scheduled", "upcoming"): continue
+        # Accepter upcoming ET scheduled (au cas où)
+        if m.get("status") not in ("upcoming", "scheduled"): continue
         matchs_analyses += 1
             
         home_name = m.get("home_team")
@@ -100,7 +106,7 @@ def main():
         home_id = m.get("home_team_id")
         away_id = m.get("away_team_id")
         
-        # --- 1. TIRS TOTAUX ---
+        # 1. TIRS TOTAUX
         h_total = get_team_stats(home_id, "total_shots")
         a_total = get_team_stats(away_id, "total_shots")
         if len(h_total) >= 3 and len(a_total) >= 3:
@@ -113,7 +119,7 @@ def main():
             if lines_tot:
                 picks_total.append(f"⚽ {home_name} — {away_name}\n  Total attendu : {match_total:.0f} tirs\n" + "\n".join(lines_tot))
 
-        # --- 2. TIRS CADRÉS ÉQUIPES ---
+        # 2. TIRS CADRÉS ÉQUIPES
         h_sot = get_team_stats(home_id, "shots_on_target")
         a_sot = get_team_stats(away_id, "shots_on_target")
         if len(h_sot) >= 3 and len(a_sot) >= 3:
@@ -126,7 +132,7 @@ def main():
             if lines_eq:
                 picks_cadres_eq.append(f"⚽ {home_name} — {away_name}\n" + "\n".join(lines_eq))
 
-        # --- 3. TIRS CADRÉS JOUEURS ---
+        # 3. TIRS CADRÉS JOUEURS
         h_players = get_players_sot_history(home_id)
         a_players = get_players_sot_history(away_id)
         
@@ -140,31 +146,24 @@ def main():
                 prob_15 = poisson_plus_de(avg_sots, 1.5)
                 
                 if prob_05 >= 0.60:
-                    cote_min = round(1/prob_05 * 1.05, 2)
-                    lines_joueurs.append(f"  • {p_name} +0,5 : {prob_05:.0%} (Cote min : {cote_min})")
+                    lines_joueurs.append(f"  • {p_name} +0,5 : {prob_05:.0%} (Cote min : {round(1/prob_05*1.05, 2)})")
                 if prob_15 >= 0.50:
-                    cote_min = round(1/prob_15 * 1.05, 2)
-                    lines_joueurs.append(f"  • {p_name} +1,5 : {prob_15:.0%} (Cote min : {cote_min})")
+                    lines_joueurs.append(f"  • {p_name} +1,5 : {prob_15:.0%} (Cote min : {round(1/prob_15*1.05, 2)})")
         
         if lines_joueurs:
             picks_cadres_joueurs.append(f"⚽ {home_name} — {away_name}\n" + "\n".join(lines_joueurs[:5]))
 
-    # --- 4. CONSTRUCTION DU MESSAGE TELEGRAM ---
+    # --- MESSAGE TELEGRAM AVEC DIAGNOSTIC ---
     msg = f"🎯 PRONOS TIRS (Bzzoiro)\n📅 {datetime.now().strftime('%d/%m/%Y')}\n"
-    msg += f"🔎 Matchs à venir analysés : {matchs_analyses}\n\n"
+    msg += f"🔎 Matchs à venir analysés : {matchs_analyses}\n"
+    msg += f"📊 Statuts trouvés : {status_counts}\n\n"
     
     if picks_total:
-        msg += "📈 TIRS TOTAUX DANS LE MATCH :\n"
-        msg += "\n\n".join(picks_total[:4]) + "\n\n"
-        
+        msg += "📈 TIRS TOTAUX DANS LE MATCH :\n" + "\n\n".join(picks_total[:4]) + "\n\n"
     if picks_cadres_eq:
-        msg += "🎯 TIRS CADRÉS PAR ÉQUIPE :\n"
-        msg += "\n\n".join(picks_cadres_eq[:4]) + "\n\n"
-        
+        msg += "🎯 TIRS CADRÉS PAR ÉQUIPE :\n" + "\n\n".join(picks_cadres_eq[:4]) + "\n\n"
     if picks_cadres_joueurs:
-        msg += "👤 TIRS CADRÉS PAR JOUEUR :\n"
-        msg += "\n\n".join(picks_cadres_joueurs[:4]) + "\n\n"
-        
+        msg += "👤 TIRS CADRÉS PAR JOUEUR :\n" + "\n\n".join(picks_cadres_joueurs[:4]) + "\n\n"
     if not picks_total and not picks_cadres_eq and not picks_cadres_joueurs:
         msg += "❌ Aucun match ne remplit les conditions aujourd'hui."
         
