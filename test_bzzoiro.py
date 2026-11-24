@@ -741,7 +741,10 @@ def main():
                     total_cards, cards_variance, line, cards_samples
                 )
                 best_cote = round(1 / best_prob * 1.04, 2) if best_prob else None
-                if best_prob >= 0.65 and best_cote >= 1.38:
+                # Pour les cartons, le seuil de confiance suffit : une cote
+                # basse reflète une probabilité élevée et ne doit pas cacher
+                # une sélection à 65 % ou plus.
+                if best_prob >= 0.65:
                     picks_cartons.append(
                         f"🟨 {match_title}\n"
                         + f"  Cartons attendus : {total_cards:.1f}"
