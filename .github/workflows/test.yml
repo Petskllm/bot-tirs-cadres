@@ -1,16 +1,13 @@
 name: Bot tirs cadrés
 
 on:
-  schedule:
-    # Exécution quotidienne à 18:00 UTC.
-    - cron: "0 18 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
         description: "Analyser et afficher les pronostics sans envoyer Telegram"
         required: false
         type: boolean
-        default: false
+        default: true
       api_football_diagnostic:
         description: "Tester la couverture API-Football sans pronostic ni Telegram"
         required: false

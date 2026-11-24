@@ -63,7 +63,7 @@ Le bot utilise uniquement Bzzoiro. Il consulte `availability` avant les sous-res
 
 ## GitHub Actions
 
-Le workflow est manuel avec `workflow_dispatch`. Il ne se lance plus automatiquement à chaque `push`, afin d'éviter un envoi Telegram accidentel lors d'une modification du dépôt. Lors d'un lancement manuel, l'option `dry_run` permet d'interroger l'API et d'afficher le message sans l'envoyer.
+Le workflow est manuel avec `workflow_dispatch` et ne se lance pas automatiquement. Lors d'un lancement manuel, `dry_run` est activé par défaut : le bot interroge l'API et affiche le message sans l'envoyer. Désactive cette option uniquement si tu veux publier sur Telegram et persister les résultats.
 
 La récupération des matchs du jour Bzzoiro est retentée trois fois. Une réponse vide est distinguée d'une erreur HTTP ou réseau. Si Bzzoiro ne répond pas, API-Football est interrogée pour confirmer si des fixtures existent ; elle ne génère toutefois aucun pronostic de secours tant que les historiques Bzzoiro nécessaires ne sont pas disponibles.
 
