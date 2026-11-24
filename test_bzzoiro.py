@@ -523,7 +523,7 @@ def main():
                 best_label, best_prob = max(candidates, key=lambda item: item[1])
                 best_cote = round(1 / best_prob * 1.04, 2) if best_prob else None
 
-                if sample_count >= 6 and best_prob >= 0.58 and best_cote >= 1.28:
+                if sample_count >= 6 and best_prob >= 0.65 and best_cote >= 1.28:
                     picks_total.append(
                         f"⚽ {match_title}\n"
                         f"  Total attendu : {match_total:.1f}\n"
@@ -553,7 +553,7 @@ def main():
                         prob, _ = line_probabilities(
                             avg, profile["variance"], line, profile["samples"]
                         )
-                        if prob >= 0.59 and prob > best_prob:
+                        if prob >= 0.65 and prob > best_prob:
                             best_prob, best_line, best_cote = prob, line, round(1 / prob * 1.04, 2)
                     if best_line:
                         picks_cadres_eq.append(
@@ -579,7 +579,7 @@ def main():
                 if bzzoiro_corners_prob is not None:
                     best_prob = 0.70 * own_corners_prob + 0.30 * bzzoiro_corners_prob
                 best_cote = round(1 / best_prob * 1.04, 2) if best_prob else None
-                if best_prob >= 0.61 and best_cote >= 1.28:
+                if best_prob >= 0.65 and best_cote >= 1.28:
                     confirmation = ""
                     if bzzoiro_corners_prob is not None:
                         confirmation = f" | Bzzoiro : {bzzoiro_corners_prob:.0%}"
@@ -607,7 +607,7 @@ def main():
                     total_cards, cards_variance, line, cards_samples
                 )
                 best_cote = round(1 / best_prob * 1.04, 2) if best_prob else None
-                if best_prob >= 0.56 and best_cote >= 1.38:
+                if best_prob >= 0.65 and best_cote >= 1.38:
                     picks_cartons.append(
                         f"🟨 {match_title}\n"
                         + f"  Cartons attendus : {total_cards:.1f}"
@@ -633,12 +633,12 @@ def main():
                 avg_sots, player_profile["variance"], 1.5, player_profile["samples"]
             )
 
-            if prob_05 >= 0.62:
+            if prob_05 >= 0.70:
                 cote = round(1 / prob_05 * 1.04, 2)
                 picks_cadres_joueurs.append(
                     f"⚽ {match_title}\n  • {p_name} +0,5 : {prob_05:.0%} (Cote min : {cote})"
                 )
-            elif prob_15 >= 0.52:
+            elif prob_15 >= 0.65:
                 cote = round(1 / prob_15 * 1.04, 2)
                 picks_cadres_joueurs.append(
                     f"⚽ {match_title}\n  • {p_name} +1,5 : {prob_15:.0%} (Cote min : {cote})"
