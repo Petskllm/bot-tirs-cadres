@@ -40,6 +40,21 @@ Pour analyser les données et afficher le message sans envoyer Telegram, utilise
 DRY_RUN=1 BZZOIRO_TOKEN=... python test_bzzoiro.py
 ```
 
+## Backtest local
+
+Le fichier `backtest_bzzoiro.py` rejoue des matchs terminés sans envoyer de message Telegram. Les historiques de chaque match sont limités aux rencontres antérieures à son coup d'envoi afin d'éviter d'utiliser des données futures. Il produit un CSV détaillé et un résumé JSON par marché.
+
+```bash
+export BZZOIRO_TOKEN=...
+python backtest_bzzoiro.py \
+  --start 2026-10-01 \
+  --end 2026-10-31 \
+  --max-matches 30 \
+  --output backtest_results.csv
+```
+
+Le backtest ne prouve pas la rentabilité : il mesure le taux de réussite théorique des sélections qui passent les filtres. Les résultats doivent être interprétés séparément par marché et avec le nombre de sélections disponibles. Les historiques d'équipes et de joueurs sont bornés avant le coup d'envoi ; les cotes et prédictions recalculées après le match ne sont volontairement pas injectées dans le score historique, car elles créeraient une fuite de données.
+
 ## Données Bzzoiro exploitées
 
 Le bot utilise uniquement Bzzoiro. Il consulte `availability` avant les sous-ressources historiques, puis exploite les statistiques d'équipe, l'xG disponible, les absences, les statistiques joueurs, les compositions confirmées, les prédictions et les cotes consensus. Les compositions confirmées servent à ne retenir que les joueurs titulaires lorsque les identifiants sont disponibles. La prédiction Bzzoiro et la cote consensus servent de confirmation secondaire pour les corners ; elles ne remplacent pas l'historique réel du modèle. Les arbitres et leur moyenne de cartons sont utilisés uniquement pour le marché cartons, avec un échantillon minimal et un ajustement plafonné.

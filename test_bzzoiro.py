@@ -291,22 +291,15 @@ def bzzoiro_consensus_corner_odds(odds):
 
 
 def lineup_starter_ids(lineups):
-    """Extrait les titulaires sans dépendre d'un seul nom de champ v2."""
+    """Extrait les titulaires Bzzoiro : players, hors substitutes."""
     found = set()
-
-    def walk(value):
-        if isinstance(value, dict):
-            player_id = value.get("player_id", value.get("id"))
-            starter = value.get("starter", value.get("is_starter", value.get("starting")))
-            if player_id and starter is True:
+    payload = lineups.get("lineups", lineups) if isinstance(lineups, dict) else {}
+    for side in ("home", "away"):
+        players = payload.get(side, {}).get("players", [])
+        for player in players if isinstance(players, list) else []:
+            player_id = player.get("id", player.get("player_id"))
+            if player_id:
                 found.add(str(player_id))
-            for child in value.values():
-                walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                walk(child)
-
-    walk(lineups)
     return found
 
 
