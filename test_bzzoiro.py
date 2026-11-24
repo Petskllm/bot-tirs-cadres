@@ -3,7 +3,7 @@ import requests
 import math
 import time
 from functools import lru_cache
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BZZOIRO_TOKEN")
@@ -12,6 +12,10 @@ TG_CHAT = os.getenv("CHAT_ID")
 DRY_RUN = os.getenv("DRY_RUN", "0").lower() in {"1", "true", "yes"}
 BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
+
+
+def utc_date():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 if not TOKEN or (not DRY_RUN and not all([TG_TOKEN, TG_CHAT])):
     print("❌ Secrets manquants")
@@ -54,9 +58,9 @@ def get_team_stats(team_id, stat_type, preferred_side=None):
     preferred_side = "home" ou "away"
     Donne beaucoup plus de poids aux matchs joués du même côté.
     """
-    today = datetime.now().strftime("%Y-%m-%d")
-    past = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
-    events = api_get(f"events/?team_id={team_id}&date_from={past}&date_to={today}")
+    today = utc_date()
+    past = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y-%m-%d")
+    events = api_get(f"events/?team_id={team_id}&date_from={past}&date_to={today}&limit=200")
     if not events or not events.get("results"):
         return []
 
@@ -113,8 +117,8 @@ def get_team_shot_profile(team_id, preferred_side, league_id=None):
     La variance historique permet de ne pas traiter tous les matchs comme
     une loi de Poisson parfaitement régulière.
     """
-    today = datetime.now().strftime("%Y-%m-%d")
-    past = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
+    today = utc_date()
+    past = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y-%m-%d")
     league_filter = f"&league_id={league_id}" if league_id else ""
     events = api_get(
         f"events/?team_id={team_id}&date_from={past}&date_to={today}{league_filter}"
@@ -237,12 +241,64 @@ def attacking_shot_adjustment(event, side):
     missing = _attacking_absences(payload, side)
     return -min(2.0, missing * 0.35)
 
+
+@lru_cache(maxsize=256)
+def get_referee(referee_id):
+    return api_get(f"referees/{referee_id}/") or {}
+
+
+def referee_card_adjustment(event):
+    """Ajuste limité des cartons si la moyenne de l'arbitre est fiable."""
+    referee = event.get("referee")
+    if not referee:
+        return 0.0
+    if isinstance(referee, dict):
+        referee_id = referee.get("id")
+        data = referee
+    else:
+        referee_id = referee
+        data = {}
+    if referee_id:
+        remote = get_referee(referee_id)
+        if isinstance(remote, dict):
+            data = {**data, **remote}
+            if isinstance(remote.get("referee"), dict):
+                data = {**data, **remote["referee"]}
+    try:
+        average = float(data.get("avg_yellow_per_match"))
+        samples = float(data.get("matches", data.get("career_games", 0)) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if samples < 8 or not 0 < average < 12:
+        return 0.0
+    return max(-0.6, min(0.6, (average - 3.8) * 0.30))
+
+
+@lru_cache(maxsize=1024)
+def get_player_name(player_id):
+    """Résout le nom v2 d'un joueur, dont player-stats ne renvoie que l'ID."""
+    data = api_get(f"players/{player_id}/") or {}
+    candidates = [data]
+    if isinstance(data.get("player"), dict):
+        candidates.append(data["player"])
+    for item in candidates:
+        for key in ("name", "display_name", "player_name"):
+            value = item.get(key)
+            if value:
+                return str(value)
+        first = item.get("first_name") or item.get("firstname")
+        last = item.get("last_name") or item.get("lastname")
+        if first or last:
+            return " ".join(str(x) for x in (first, last) if x)
+    return f"Joueur {player_id}"
+
+
 def get_players_sot_history(team_id, league_id=None):
-    today = datetime.now().strftime("%Y-%m-%d")
-    past = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    today = utc_date()
+    past = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
     league_filter = f"&league_id={league_id}" if league_id else ""
     events = api_get(
-        f"events/?team_id={team_id}&date_from={past}&date_to={today}{league_filter}"
+        f"events/?team_id={team_id}&date_from={past}&date_to={today}{league_filter}&limit=200"
     )
     if not events or not events.get("results"):
         return {}
@@ -256,28 +312,42 @@ def get_players_sot_history(team_id, league_id=None):
         if stats and "player_stats" in stats:
             weight = max(1.0, 1.5 - (idx * 0.1))
             for p in stats["player_stats"]:
-                if p.get("team_id") == team_id and p.get("minutes_played", 0) >= 45:
-                    name = p.get("player_name", "")
-                    if not name or name == "Inconnu":
-                        continue
-                    try:
-                        sots = float(p.get("shots_on_target", 0) or 0)
-                    except (TypeError, ValueError):
-                        continue
-                    if name not in player_history:
-                        player_history[name] = []
-                    player_history[name].append((sots, weight))
+                if p.get("team_id") != team_id:
+                    continue
+                try:
+                    minutes = float(p.get("minutes_played", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if minutes < 30:
+                    continue
+                player_id = p.get("player_id")
+                if not player_id:
+                    continue
+                name = get_player_name(player_id)
+                if not name:
+                    continue
+                try:
+                    sots = float(p.get("shots_on_target", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if name not in player_history:
+                    player_history[name] = []
+                player_history[name].append((sots, weight, minutes))
 
     weighted_players = {}
     for name, history in player_history.items():
         if len(history) >= 3:
-            total_w = sum(w for v, w in history)
-            avg = sum(v * w for v, w in history) / total_w
-            variance = sum(w * (v - avg) ** 2 for v, w in history) / total_w
+            total_w = sum(w for v, w, mins in history)
+            avg = sum(v * w for v, w, mins in history) / total_w
+            variance = sum(w * (v - avg) ** 2 for v, w, mins in history) / total_w
+            avg_minutes = sum(mins * w for v, w, mins in history) / total_w
+            if avg_minutes < 35:
+                continue
             weighted_players[name] = {
                 "average": avg,
                 "variance": variance,
                 "samples": len(history),
+                "avg_minutes": avg_minutes,
             }
 
     return weighted_players
@@ -291,9 +361,9 @@ def main():
             league_map[l["id"]] = str(l.get("name", "")).lower()
 
     print("⏳ Analyse globale (version Domicile/Extérieur + xG)...")
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = utc_date()
 
-    events = api_get(f"events/?date_from={today}&date_to={today}")
+    events = api_get(f"events/?date_from={today}&date_to={today}&limit=200")
     if not events or not events.get("results"):
         send_telegram(f"🤷‍♂️ Aucun match dans l'API pour le {today}.")
         return
@@ -318,7 +388,8 @@ def main():
         l_id = m.get("league_id")
         league_name = league_map.get(l_id, "")
 
-        if not any(l in league_name for l in LIGUES_AUTORISEES):
+        league_name = " ".join(league_name.split())
+        if league_name not in LIGUES_AUTORISEES:
             matchs_ignores += 1
             continue
 
@@ -353,9 +424,12 @@ def main():
                 # moins de 27 = au plus 26 tirs. Les deux probabilités
                 # sont complémentaires sur la ligne 26,5.
                 line = 26.5
-                over_prob, under_prob = line_probabilities(
+                raw_over, raw_under = line_probabilities(
                     match_total, match_variance, line, sample_count
                 )
+                confidence = min(1.0, sample_count / 8.0)
+                over_prob = 0.5 + (raw_over - 0.5) * confidence
+                under_prob = 0.5 + (raw_under - 0.5) * confidence
                 candidates = [
                     ("+27", over_prob),
                     ("-27", under_prob),
@@ -363,7 +437,7 @@ def main():
                 best_label, best_prob = max(candidates, key=lambda item: item[1])
                 best_cote = round(1 / best_prob * 1.04, 2) if best_prob else None
 
-                if best_prob >= 0.56 and best_cote >= 1.28:
+                if sample_count >= 6 and best_prob >= 0.58 and best_cote >= 1.28:
                     picks_total.append(
                         f"⚽ {match_title}\n"
                         f"  Total attendu : {match_total:.1f}\n"
@@ -429,7 +503,8 @@ def main():
         if h_profile.get("yellow_cards") and a_profile.get("yellow_cards"):
             h_yellow = h_profile["yellow_cards"]
             a_yellow = a_profile["yellow_cards"]
-            total_cards = h_yellow["average"] + a_yellow["average"]
+            referee_adjustment = referee_card_adjustment(m)
+            total_cards = h_yellow["average"] + a_yellow["average"] + referee_adjustment
             cards_variance = h_yellow["variance"] + a_yellow["variance"]
             cards_samples = min(h_yellow["samples"], a_yellow["samples"])
             if 2 < total_cards < 11:
@@ -441,12 +516,13 @@ def main():
                 if best_prob >= 0.56 and best_cote >= 1.38:
                     picks_cartons.append(
                         f"🟨 {match_title}\n"
-                        f"  Cartons attendus : {total_cards:.1f}\n"
-                        f"  • +4,5 cartons : {best_prob:.0%} (Cote estimée : {best_cote})"
+                        + f"  Cartons attendus : {total_cards:.1f}"
+                        + (f" (arbitre : {referee_adjustment:+.1f})\n" if referee_adjustment else "\n")
+                        + f"  • +4,5 cartons : {best_prob:.0%} (Cote estimée : {best_cote})"
                     )
 
         # ============================================
-        # 5. JOUEURS (inchangé pour l’instant)
+        # 5. JOUEURS (historique v2 par player_id et minutes jouées)
         # ============================================
         h_players = get_players_sot_history(home_id, l_id)
         a_players = get_players_sot_history(away_id, l_id)
