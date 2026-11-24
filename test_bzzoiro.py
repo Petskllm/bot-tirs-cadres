@@ -70,6 +70,9 @@ def get_team_stats(team_id, stat_type, preferred_side=None):
     weighted_vals = []
 
     for idx, e in enumerate(finished[:10]):  # on regarde un peu plus large
+        availability = get_event_availability(e["id"])
+        if availability.get("available", {}).get("stats") is False:
+            continue
         st = api_get(f"events/{e['id']}/stats/")
         if not st or not st.get("stats"):
             continue
@@ -121,7 +124,7 @@ def get_team_shot_profile(team_id, preferred_side, league_id=None):
     past = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y-%m-%d")
     league_filter = f"&league_id={league_id}" if league_id else ""
     events = api_get(
-        f"events/?team_id={team_id}&date_from={past}&date_to={today}{league_filter}"
+        f"events/?team_id={team_id}&date_from={past}&date_to={today}{league_filter}&limit=200"
     )
     if not events or not events.get("results"):
         return {}
@@ -136,6 +139,9 @@ def get_team_shot_profile(team_id, preferred_side, league_id=None):
     observations["xg"] = []
 
     for idx, event in enumerate(finished[:10]):
+        availability = get_event_availability(event["id"])
+        if availability.get("available", {}).get("stats") is False:
+            continue
         stats = api_get(f"events/{event['id']}/stats/")
         if not stats or not stats.get("stats"):
             continue
@@ -233,6 +239,77 @@ def get_event_availability(event_id):
     return api_get(f"events/{event_id}/availability/") or {}
 
 
+@lru_cache(maxsize=256)
+def get_event_lineups(event_id):
+    return api_get(f"events/{event_id}/lineups/") or {}
+
+
+@lru_cache(maxsize=256)
+def get_event_prediction(event_id):
+    return api_get(f"events/{event_id}/prediction/") or {}
+
+
+@lru_cache(maxsize=256)
+def get_event_odds(event_id):
+    return api_get(f"events/{event_id}/odds/") or {}
+
+
+def bzzoiro_corner_probability(prediction):
+    """Lit la probabilité Bzzoiro (0-100) sans supposer qu'elle existe."""
+    markets = prediction.get("markets", {}) if isinstance(prediction, dict) else {}
+    corners = markets.get("corners", {}) if isinstance(markets, dict) else {}
+    try:
+        probability = float(corners.get("prob_over_95")) / 100
+        confidence = float(prediction.get("model", {}).get("confidence", 0))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if 0 < probability < 1 and confidence >= 0.55:
+        return probability
+    return None
+
+
+def bzzoiro_consensus_corner_odds(odds):
+    """Retourne la cote consensus +9,5 si elle existe dans la réponse."""
+    rows = odds.get("results", odds) if isinstance(odds, dict) else odds
+    if isinstance(rows, dict):
+        rows = rows.get("odds", rows.get("markets", []))
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        market = str(row.get("market", row.get("key", ""))).lower()
+        outcome = str(row.get("outcome", row.get("name", ""))).lower()
+        try:
+            line = float(row.get("line"))
+            price = float(row.get("decimal_odds", row.get("odds", row.get("price"))))
+        except (TypeError, ValueError):
+            continue
+        if "corner" in market and abs(line - 9.5) < 0.01 and "over" in outcome and price > 1:
+            return price
+    return None
+
+
+def lineup_starter_ids(lineups):
+    """Extrait les titulaires sans dépendre d'un seul nom de champ v2."""
+    found = set()
+
+    def walk(value):
+        if isinstance(value, dict):
+            player_id = value.get("player_id", value.get("id"))
+            starter = value.get("starter", value.get("is_starter", value.get("starting")))
+            if player_id and starter is True:
+                found.add(str(player_id))
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(lineups)
+    return found
+
+
 def attacking_shot_adjustment(event, side):
     """Réduit prudemment le volume attendu si une absence offensive est certaine."""
     payload = event.get("unavailable_players")
@@ -307,7 +384,11 @@ def get_players_sot_history(team_id, league_id=None):
     finished.sort(key=lambda x: x.get("event_date", ""), reverse=True)
 
     player_history = {}
+    player_ids = {}
     for idx, e in enumerate(finished[:7]):
+        availability = get_event_availability(e["id"])
+        if availability.get("available", {}).get("player_stats") is False:
+            continue
         stats = api_get(f"events/{e['id']}/player-stats/")
         if stats and "player_stats" in stats:
             weight = max(1.0, 1.5 - (idx * 0.1))
@@ -332,6 +413,7 @@ def get_players_sot_history(team_id, league_id=None):
                     continue
                 if name not in player_history:
                     player_history[name] = []
+                    player_ids[name] = str(player_id)
                 player_history[name].append((sots, weight, minutes))
 
     weighted_players = {}
@@ -348,6 +430,7 @@ def get_players_sot_history(team_id, league_id=None):
                 "variance": variance,
                 "samples": len(history),
                 "avg_minutes": avg_minutes,
+                "player_id": player_ids.get(name),
             }
 
     return weighted_players
@@ -400,6 +483,16 @@ def main():
         match_title = f"{home_name} — {away_name}"
         home_id = m.get("home_team_id")
         away_id = m.get("away_team_id")
+        availability = get_event_availability(fid)
+        available = availability.get("available", {}) if isinstance(availability, dict) else {}
+        lineup_status = availability.get("lineup_status") if isinstance(availability, dict) else None
+        starters = set()
+        if available.get("lineups") and lineup_status == "confirmed":
+            starters = lineup_starter_ids(get_event_lineups(fid))
+        prediction = get_event_prediction(fid) if available.get("prediction") else {}
+        odds = get_event_odds(fid) if available.get("odds") else {}
+        bzzoiro_corners_prob = bzzoiro_corner_probability(prediction)
+        bzzoiro_corners_odds = bzzoiro_consensus_corner_odds(odds)
 
         # ============================================
         # 1. TIRS TOTAUX (avec séparation D/E + xG)
@@ -486,15 +579,23 @@ def main():
             corners_samples = min(h_corners["samples"], a_corners["samples"])
             if 7 < total_corners < 22:
                 line = 9.5
-                best_prob, _ = line_probabilities(
+                own_corners_prob, _ = line_probabilities(
                     total_corners, corners_variance, line, corners_samples
                 )
+                best_prob = own_corners_prob
+                if bzzoiro_corners_prob is not None:
+                    best_prob = 0.70 * own_corners_prob + 0.30 * bzzoiro_corners_prob
                 best_cote = round(1 / best_prob * 1.04, 2) if best_prob else None
                 if best_prob >= 0.61 and best_cote >= 1.28:
+                    confirmation = ""
+                    if bzzoiro_corners_prob is not None:
+                        confirmation = f" | Bzzoiro : {bzzoiro_corners_prob:.0%}"
+                    if bzzoiro_corners_odds:
+                        confirmation += f" | Cote Bzzoiro : {bzzoiro_corners_odds:.2f}"
                     picks_corners.append(
                         f"🚩 {match_title}\n"
                         f"  Corners attendus : {total_corners:.1f}\n"
-                        f"  • +9,5 corners : {best_prob:.0%} (Cote estimée : {best_cote})"
+                        f"  • +9,5 corners : {best_prob:.0%} (Cote estimée : {best_cote}){confirmation}"
                     )
 
         # ============================================
@@ -529,6 +630,8 @@ def main():
         all_players = {**h_players, **a_players}
 
         for p_name, player_profile in all_players.items():
+            if starters and player_profile.get("player_id") not in starters:
+                continue
             avg_sots = player_profile["average"]
             prob_05, _ = line_probabilities(
                 avg_sots, player_profile["variance"], 0.5, player_profile["samples"]

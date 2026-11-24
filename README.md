@@ -40,9 +40,13 @@ Pour analyser les données et afficher le message sans envoyer Telegram, utilise
 DRY_RUN=1 BZZOIRO_TOKEN=... python test_bzzoiro.py
 ```
 
+## Données Bzzoiro exploitées
+
+Le bot utilise uniquement Bzzoiro. Il consulte `availability` avant les sous-ressources historiques, puis exploite les statistiques d'équipe, l'xG disponible, les absences, les statistiques joueurs, les compositions confirmées, les prédictions et les cotes consensus. Les compositions confirmées servent à ne retenir que les joueurs titulaires lorsque les identifiants sont disponibles. La prédiction Bzzoiro et la cote consensus servent de confirmation secondaire pour les corners ; elles ne remplacent pas l'historique réel du modèle. Les arbitres et leur moyenne de cartons sont utilisés uniquement pour le marché cartons, avec un échantillon minimal et un ajustement plafonné.
+
 ## GitHub Actions
 
-Le workflow se lance quotidiennement selon sa planification ou manuellement avec `workflow_dispatch`. Il ne se lance plus automatiquement à chaque `push`, afin d'éviter un envoi Telegram accidentel lors d'une modification du dépôt. Lors d'un lancement manuel, l'option `dry_run` permet d'interroger l'API et d'afficher le message sans l'envoyer.
+Le workflow est manuel avec `workflow_dispatch`. Il ne se lance plus automatiquement à chaque `push`, afin d'éviter un envoi Telegram accidentel lors d'une modification du dépôt. Lors d'un lancement manuel, l'option `dry_run` permet d'interroger l'API et d'afficher le message sans l'envoyer.
 
 ## Limites connues et maintenance
 
