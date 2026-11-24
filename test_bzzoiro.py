@@ -6,12 +6,14 @@ from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from tracking import build_reports, record_predictions, settle_pending
 from api_football_validation import diagnose_api_football, format_report, validate_matches
+from bot_modes import should_persist_results, should_send_telegram
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BZZOIRO_TOKEN")
 TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT = os.getenv("CHAT_ID")
 DRY_RUN = os.getenv("DRY_RUN", "0").lower() in {"1", "true", "yes"}
+TRACK_ONLY = os.getenv("TRACK_ONLY", "0").lower() in {"1", "true", "yes"}
 API_FOOTBALL_DIAGNOSTIC = os.getenv("API_FOOTBALL_DIAGNOSTIC", "0").lower() in {"1", "true", "yes"}
 BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
@@ -29,7 +31,7 @@ def utc_date():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 if (not TOKEN and not API_FOOTBALL_DIAGNOSTIC) or (
-    not DRY_RUN and not API_FOOTBALL_DIAGNOSTIC and not all([TG_TOKEN, TG_CHAT])
+    not DRY_RUN and not TRACK_ONLY and not API_FOOTBALL_DIAGNOSTIC and not all([TG_TOKEN, TG_CHAT])
 ):
     print("❌ Secrets manquants")
     exit(1)
@@ -554,7 +556,7 @@ def main():
         print("🔬 Diagnostic API-Football uniquement : aucun Telegram, aucun pronostic")
         print(json.dumps(diagnose_api_football(utc_date()), ensure_ascii=False, indent=2))
         return
-    if not DRY_RUN:
+    if should_persist_results(DRY_RUN, TRACK_ONLY):
         settled = settle_pending(api_get)
         if settled:
             print(f"✅ Pronostics réglés : {settled}")
@@ -587,8 +589,8 @@ def main():
             )
         else:
             message = f"🤷‍♂️ Aucune fixture confirmée par les APIs pour le {today}."
-        if DRY_RUN:
-            print("🧪 DRY_RUN actif : aucun message Telegram envoyé")
+        if not should_send_telegram(DRY_RUN, TRACK_ONLY):
+            print("🧪 Mode sans publication Telegram actif")
             print(message)
         else:
             send_telegram(message)
@@ -927,7 +929,7 @@ def main():
     if not any([picks_total, picks_cadres_eq, picks_cadres_joueurs, picks_corners, picks_cartons]):
         msg += "❌ Aucune sélection ne passe les filtres aujourd'hui."
 
-    if DRY_RUN:
+    if not should_persist_results(DRY_RUN, TRACK_ONLY):
         print("🧪 DRY_RUN actif : aucun message Telegram envoyé")
         print(msg)
         return
@@ -936,6 +938,9 @@ def main():
     report = build_reports()
     print(f"📚 Nouvelles sélections enregistrées : {added}")
     print(f"📊 Pronostics réglés suivis : {report.get('settled_predictions', 0)}")
+    if not should_send_telegram(DRY_RUN, TRACK_ONLY):
+        print("🧪 Mode suivi seul : aucun message Telegram envoyé")
+        return
     send_telegram(msg)
     print("✅ Message envoyé !")
 

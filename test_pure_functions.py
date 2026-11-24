@@ -2,7 +2,7 @@
 import unittest
 
 from api_only_stats import extract
-from tracking import _bucket, _number, _won
+from tracking import _bucket, _number, _prediction_key, _won
 
 
 class TrackingPureFunctionsTests(unittest.TestCase):
@@ -33,6 +33,13 @@ class TrackingPureFunctionsTests(unittest.TestCase):
         self.assertEqual(_won({"market": "unknown", "line": 1}, {}), (None, None))
         self.assertEqual(_won({"market": "corners"}, {"corners": 8}), (None, None))
         self.assertEqual(_won({"market": "corners", "line": 8}, {}), (None, None))
+
+    def test_prediction_key_separates_model_versions(self):
+        base = {"event_id": 42, "market": "tirs_cadres_equipe", "selection": "home +3.5"}
+        old = _prediction_key({**base, "model_version": "v2.4"})
+        new = _prediction_key({**base, "model_version": "v2.5"})
+
+        self.assertNotEqual(old, new)
 
 
 class ApiOnlyPureFunctionsTests(unittest.TestCase):

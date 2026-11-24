@@ -47,7 +47,10 @@ def _write_json(path, value):
 
 
 def _prediction_key(row):
-    return "|".join(str(row.get(field, "")) for field in ("event_id", "market", "selection", "team_id", "player_id"))
+    return "|".join(
+        str(row.get(field, ""))
+        for field in ("event_id", "market", "selection", "team_id", "player_id", "model_version")
+    )
 
 
 def record_predictions(rows, model_version):
