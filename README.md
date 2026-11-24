@@ -65,6 +65,8 @@ Le bot utilise uniquement Bzzoiro. Il consulte `availability` avant les sous-res
 
 Le workflow est manuel avec `workflow_dispatch`. Il ne se lance plus automatiquement à chaque `push`, afin d'éviter un envoi Telegram accidentel lors d'une modification du dépôt. Lors d'un lancement manuel, l'option `dry_run` permet d'interroger l'API et d'afficher le message sans l'envoyer.
 
+La récupération des matchs du jour Bzzoiro est retentée trois fois. Une réponse vide est distinguée d'une erreur HTTP ou réseau. Si Bzzoiro ne répond pas, API-Football est interrogée pour confirmer si des fixtures existent ; elle ne génère toutefois aucun pronostic de secours tant que les historiques Bzzoiro nécessaires ne sont pas disponibles.
+
 ## Limites connues et maintenance
 
 Le bot conserve maintenant chaque sélection réelle dans `data/predictions.jsonl`, puis règle automatiquement les matchs terminés lors des exécutions suivantes. `data/market_report.json` calcule le taux de réussite, l'écart de calibration et le score de Brier par marché ; `data/calibration.json` regroupe les résultats par tranches de probabilité. Le mode `DRY_RUN` ne modifie jamais ces fichiers. Les erreurs d'API sont traitées de manière défensive ; une absence de données peut conduire à l'absence de sélection.

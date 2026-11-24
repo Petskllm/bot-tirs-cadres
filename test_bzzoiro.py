@@ -46,6 +46,31 @@ def api_get(endpoint):
     except (requests.RequestException, ValueError):
         return None
 
+
+def get_daily_events(today, attempts=3):
+    """Récupère les matchs du jour avec relances et état diagnostic.
+
+    Retourne (payload, error). Une réponse HTTP valide mais vide n'est pas
+    confondue avec une erreur réseau ou serveur.
+    """
+    endpoint = f"events/?date_from={today}&date_to={today}&limit=200"
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.get(f"{BASE}/{endpoint}", headers=headers, timeout=15)
+            if response.status_code != 200:
+                last_error = f"HTTP {response.status_code}"
+            else:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    return payload, None
+                last_error = "réponse JSON invalide"
+        except (requests.RequestException, ValueError) as exc:
+            last_error = type(exc).__name__
+        if attempt < attempts:
+            time.sleep(2)
+    return None, last_error or "réponse vide"
+
 def poisson_plus_de(lam, k):
     if lam <= 0:
         return 0.0
@@ -536,9 +561,24 @@ def main():
     print("⏳ Analyse globale (version Domicile/Extérieur + xG)...")
     today = utc_date()
 
-    events = api_get(f"events/?date_from={today}&date_to={today}&limit=200")
+    events, events_error = get_daily_events(today)
     if not events or not events.get("results"):
-        message = f"🤷‍♂️ Aucun match dans l'API pour le {today}."
+        fallback = validate_matches([], today)
+        api_count = fallback.get("api_fixtures", 0) if fallback.get("enabled") else 0
+        if events_error:
+            message = (
+                f"⚠️ Bzzoiro indisponible pour le {today} après 3 tentatives "
+                f"({events_error}). API-Football confirme {api_count} fixture(s). "
+                "Aucun pronostic généré."
+            )
+        elif api_count:
+            message = (
+                f"⚠️ Bzzoiro n'a renvoyé aucun match pour le {today}, "
+                f"mais API-Football confirme {api_count} fixture(s). "
+                "Aucun pronostic généré faute de données Bzzoiro complètes."
+            )
+        else:
+            message = f"🤷‍♂️ Aucune fixture confirmée par les APIs pour le {today}."
         if DRY_RUN:
             print("🧪 DRY_RUN actif : aucun message Telegram envoyé")
             print(message)
