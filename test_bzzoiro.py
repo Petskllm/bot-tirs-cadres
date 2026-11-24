@@ -16,6 +16,13 @@ BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
 MODEL_VERSION = "v2.4-thresholds-65-lineups"
 
+# Marché prioritaire : +4,5 cartons. Le seuil de probabilité reste le filtre
+# principal, mais on exige un historique minimum pour éviter les belles cotes
+# produites sur deux ou trois matchs seulement.
+CARDS_MIN_PROB = 0.65
+CARDS_MIN_SAMPLES = 6
+CARDS_MIN_EXPECTED = 4.5
+
 
 def utc_date():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -735,7 +742,10 @@ def main():
             total_cards = h_yellow["average"] + a_yellow["average"] + referee_adjustment
             cards_variance = h_yellow["variance"] + a_yellow["variance"]
             cards_samples = min(h_yellow["samples"], a_yellow["samples"])
-            if 2 < total_cards < 11:
+            if (
+                CARDS_MIN_EXPECTED <= total_cards < 11
+                and cards_samples >= CARDS_MIN_SAMPLES
+            ):
                 line = 4.5
                 best_prob, _ = line_probabilities(
                     total_cards, cards_variance, line, cards_samples
@@ -744,7 +754,7 @@ def main():
                 # Pour les cartons, le seuil de confiance suffit : une cote
                 # basse reflète une probabilité élevée et ne doit pas cacher
                 # une sélection à 65 % ou plus.
-                if best_prob >= 0.65:
+                if best_prob >= CARDS_MIN_PROB:
                     picks_cartons.append(
                         f"🟨 {match_title}\n"
                         + f"  Cartons attendus : {total_cards:.1f}"

@@ -14,7 +14,7 @@ Les probabilités et cotes affichées par le script sont des **estimations du mo
 
 Pour les tirs totaux, la ligne principale est désormais séparée en deux marchés complémentaires : **plus de 27 tirs** (au moins 27) et **moins de 27 tirs** (au plus 26). Le bot retient le côté dont la probabilité estimée est la plus élevée, sous réserve du seuil de confiance.
 
-Les lignes suivies explicitement sont `+27/-27 tirs`, `+9,5 corners` et `+4,5 cartons`. Les tirs cadrés équipes utilisent les lignes `+3,5` et `+4,5`, tandis que les tirs cadrés joueurs utilisent `+0,5` et `+1,5`.
+Les lignes suivies explicitement sont `+27/-27 tirs`, `+9,5 corners` et `+4,5 cartons`. Le marché `+4,5 cartons` est prioritaire : il exige au moins 65 % de probabilité, au moins 6 observations de cartons pour chaque équipe et un total attendu d'au moins 4,5 cartons. Il n'a pas de cote minimale artificielle. Les tirs cadrés équipes utilisent les lignes `+3,5` et `+4,5`, tandis que les tirs cadrés joueurs utilisent `+0,5` et `+1,5`.
 
 ## Secrets GitHub Actions
 
