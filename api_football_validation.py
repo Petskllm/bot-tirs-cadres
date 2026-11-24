@@ -36,6 +36,14 @@ def _api_get(path, params, token):
     return payload
 
 
+def _safe_error_message(exc, token):
+    """Return a bounded provider error without ever echoing the API key."""
+    message = " ".join(str(exc).split())
+    if token:
+        message = message.replace(token, "[REDACTED]")
+    return message[:500]
+
+
 def _team_names(fixture):
     teams = fixture.get("teams", {})
     return (
@@ -59,7 +67,7 @@ def validate_matches(matches, date=None):
     try:
         payload = _api_get("fixtures", {"date": date}, token)
     except (requests.RequestException, ValueError, RuntimeError) as exc:
-        return {"enabled": True, "error": str(exc), "matches": []}
+        return {"enabled": True, "error": _safe_error_message(exc, token), "matches": []}
 
     fixtures = payload.get("response", [])
     by_pair = {}
@@ -129,7 +137,11 @@ def diagnose_api_football(date=None):
         result["fixtures"] = len(rows)
         result["endpoints"]["fixtures"] = {"ok": True, "count": len(rows)}
     except (requests.RequestException, ValueError, RuntimeError) as exc:
-        result["endpoints"]["fixtures"] = {"ok": False, "error": type(exc).__name__}
+        result["endpoints"]["fixtures"] = {
+            "ok": False,
+            "error": type(exc).__name__,
+            "message": _safe_error_message(exc, token),
+        }
         return result
     if not rows:
         return result
@@ -150,5 +162,9 @@ def diagnose_api_football(date=None):
                 "count": len(response) if isinstance(response, list) else 1,
             }
         except (requests.RequestException, ValueError, RuntimeError) as exc:
-            result["endpoints"][name] = {"ok": False, "error": type(exc).__name__}
+            result["endpoints"][name] = {
+                "ok": False,
+                "error": type(exc).__name__,
+                "message": _safe_error_message(exc, token),
+            }
     return result

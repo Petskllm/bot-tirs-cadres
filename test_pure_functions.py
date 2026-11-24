@@ -2,6 +2,7 @@
 import unittest
 from unittest.mock import patch
 
+import api_football_validation as api_validation
 from api_only_stats import extract
 import backtest_bzzoiro as backtest
 from model_rules import is_attacking_player, select_player_sot, select_team_sot
@@ -159,6 +160,21 @@ class ApiOnlyPureFunctionsTests(unittest.TestCase):
         })
         self.assertEqual(extract(statistics, "Away")["shots_on_target"], 2)
         self.assertEqual(extract(statistics, "Missing"), {})
+
+
+class ApiFootballDiagnosticTests(unittest.TestCase):
+    def test_diagnostic_includes_provider_error_but_redacts_api_key(self):
+        secret = "test-api-key-never-print"
+        with patch.dict("os.environ", {"API_FOOTBALL_KEY": secret}), patch.object(
+            api_validation, "_api_get", side_effect=RuntimeError(f"quota error echoed {secret}")
+        ):
+            result = api_validation.diagnose_api_football("2026-11-24")
+
+        fixture_result = result["endpoints"]["fixtures"]
+        self.assertFalse(fixture_result["ok"])
+        self.assertEqual(fixture_result["error"], "RuntimeError")
+        self.assertIn("quota error echoed [REDACTED]", fixture_result["message"])
+        self.assertNotIn(secret, repr(result))
 
 
 if __name__ == "__main__":
