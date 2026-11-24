@@ -21,6 +21,8 @@ Les lignes suivies explicitement sont `+27/-27 tirs`, `+9,5 corners` et `+4,5 ca
 - `BZZOIRO_TOKEN` : jeton d'accès à l'API Bzzoiro.
 - `TELEGRAM_TOKEN` : jeton du bot Telegram.
 - `CHAT_ID` : identifiant du chat ou canal destinataire.
+- `API_FOOTBALL_KEY` : clé API-Football facultative pour le contrôle secondaire
+  des correspondances de matchs. Elle ne doit jamais être écrite dans le code.
 
 ## Installation et exécution locale
 
@@ -66,6 +68,14 @@ Le workflow est manuel avec `workflow_dispatch`. Il ne se lance plus automatique
 ## Limites connues et maintenance
 
 Le bot conserve maintenant chaque sélection réelle dans `data/predictions.jsonl`, puis règle automatiquement les matchs terminés lors des exécutions suivantes. `data/market_report.json` calcule le taux de réussite, l'écart de calibration et le score de Brier par marché ; `data/calibration.json` regroupe les résultats par tranches de probabilité. Le mode `DRY_RUN` ne modifie jamais ces fichiers. Les erreurs d'API sont traitées de manière défensive ; une absence de données peut conduire à l'absence de sélection.
+
+Lorsque `API_FOOTBALL_KEY` est disponible, le bot interroge API-Football en
+mode validation uniquement. Il compare les matchs éligibles du jour et affiche
+le nombre de correspondances, sans modifier les probabilités Bzzoiro ni bloquer
+une sélection. Cette étape permet de mesurer la couverture avant d'utiliser
+éventuellement les tirs et tirs cadrés API-Football dans les décisions. Le plan
+gratuit est limité à 100 requêtes par jour ; le module effectue actuellement
+une seule requête de fixtures par exécution.
 
 Les réponses API sont mises en cache pendant l'exécution afin d'éviter de redemander plusieurs fois les mêmes événements et statistiques. Le modèle des tirs utilise les moyennes pondérées des dix derniers matchs disponibles, séparées domicile/extérieur, ainsi que la variance historique des tirs. Il utilise une approximation normale lorsque l'échantillon est suffisant et revient à Poisson avec peu de données. Les champs `total_shots`, `shots_on_target`, `shots_off_target`, `blocked_shots`, `hit_woodwork` et `xg` sont lus lorsqu'ils sont disponibles ; `xg` reste une information complémentaire et n'est pas converti artificiellement en nombre de tirs. Les absences offensives explicitement identifiées par `availability` sont prises en compte avec une correction plafonnée, tandis qu'une absence sans poste connu est ignorée pour éviter de pénaliser à tort une équipe.
 

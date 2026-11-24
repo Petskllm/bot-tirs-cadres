@@ -5,6 +5,7 @@ import time
 from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from tracking import build_reports, record_predictions, settle_pending
+from api_football_validation import format_report, validate_matches
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BZZOIRO_TOKEN")
@@ -539,6 +540,14 @@ def main():
         return
 
     matches = events["results"]
+    validation_matches = []
+    for match in matches:
+        if match.get("status") != "notstarted":
+            continue
+        match_league = " ".join(league_map.get(match.get("league_id"), "").split())
+        if match_league in LIGUES_AUTORISEES:
+            validation_matches.append(match)
+    api_football_report = validate_matches(validation_matches, today)
 
     picks_total = []
     picks_cadres_eq = []
@@ -828,6 +837,7 @@ def main():
     msg = f"🎯 PRONOS TIRS & xG (Version D/E + xG)\n📅 {datetime.now().strftime('%d/%m/%Y')}\n"
     msg += f"🔎 Matchs analysés : {matchs_analyses} (Top ligues)\n"
     msg += f"🚫 Autres matchs ignorés : {matchs_ignores}\n\n"
+    msg += format_report(api_football_report) + "\n\n"
 
     if len(combo_picks) >= 3:
         msg += "🔥 **COMBINÉ TIRS TOTAUX (Max 5)** 🔥\n"

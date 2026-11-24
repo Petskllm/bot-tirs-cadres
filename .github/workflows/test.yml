@@ -37,6 +37,7 @@ jobs:
           BZZOIRO_TOKEN: ${{ secrets.BZZOIRO_TOKEN }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           DRY_RUN: ${{ inputs.dry_run || false }}
         run: python test_bzzoiro.py
       - name: Persister les résultats et rapports
