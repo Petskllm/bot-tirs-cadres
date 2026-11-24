@@ -55,7 +55,7 @@ python backtest_bzzoiro.py \
   --output backtest_results.csv
 ```
 
-Le backtest ne prouve pas la rentabilité : il mesure le taux de réussite théorique des sélections qui passent les filtres. Les résultats doivent être interprétés séparément par marché et avec le nombre de sélections disponibles. Les historiques d'équipes et de joueurs sont bornés avant le coup d'envoi ; les cotes et prédictions recalculées après le match ne sont volontairement pas injectées dans le score historique, car elles créeraient une fuite de données.
+Le backtest ne prouve pas la rentabilité : il mesure le taux de réussite théorique des sélections qui passent les filtres. Pour les tirs cadrés équipe/joueur, les fenêtres d'historique, profils, conditions d'éligibilité et seuils de sélection sont partagés avec la production. Les autres marchés du backtest restent exploratoires et ne reproduisent pas encore intégralement les règles de production. Les résultats doivent être interprétés séparément par marché et avec le nombre de sélections disponibles. Les historiques d'équipes et de joueurs sont bornés avant le coup d'envoi ; les cotes et prédictions recalculées après le match ne sont volontairement pas injectées dans le score historique, car elles créeraient une fuite de données.
 
 ## Données Bzzoiro exploitées
 

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from tracking import build_reports, record_predictions, settle_pending
 from api_football_validation import diagnose_api_football, format_report, validate_matches
 from bot_modes import should_persist_results, should_send_telegram
+from model_rules import is_attacking_player, normalized_player_position, select_player_sot, select_team_sot
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BZZOIRO_TOKEN")
@@ -441,38 +442,6 @@ def get_player_profile(player_id):
     return data if isinstance(data, dict) else {}
 
 
-def normalized_player_position(profile):
-    """Normalise la position pour filtrer les profils défensifs."""
-    if not isinstance(profile, dict):
-        return ""
-    value = profile.get("position", profile.get("position_name", profile.get("role", "")))
-    return " ".join(str(value).lower().replace("_", " ").split())
-
-
-def is_attacking_player(position):
-    """Refuse les gardiens/défenseurs; accepte les milieux offensifs et attaquants."""
-    position = normalized_player_position({"position": position})
-    if not position:
-        return False
-    defensive_tokens = (
-        "goalkeeper", "goal keeper", "keeper", "defender", "centre back",
-        "center back", "centre-back", "center-back", "full back", "full-back",
-        "left back", "right back", "wing back", "sweeper", "goalie",
-    )
-    if any(token in position for token in defensive_tokens):
-        return False
-    defensive_codes = {"gk", "gb", "df", "d", "cb", "dc", "lb", "rb", "lwb", "rwb", "dl", "dr"}
-    if position in defensive_codes:
-        return False
-    attacking_tokens = (
-        "forward", "striker", "attacker", "winger", "midfielder", "midfield",
-        "forward", "second striker", "offensive", "am", "wing",
-    )
-    return position in {"f", "fw", "st", "cf", "lf", "rf", "m", "mf", "am"} or any(
-        token in position for token in attacking_tokens
-    )
-
-
 def get_players_sot_history(team_id, league_id=None):
     today = utc_date()
     past = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
@@ -724,26 +693,22 @@ def main():
                 (away_name, a_profile["shots_on_target"], "away"),
             ]:
                 avg = profile["average"]
-                if avg < 12:
-                    best_prob, best_line, best_cote = 0, None, None
-                    for line in [3.5, 4.5]:
-                        prob, _ = line_probabilities(
-                            avg, profile["variance"], line, profile["samples"]
-                        )
-                        if prob >= 0.65 and prob > best_prob:
-                            best_prob, best_line, best_cote = prob, line, round(1 / prob * 1.04, 2)
-                    if best_line:
-                        picks_cadres_eq.append(
-                            f"⚽ {match_title}\n"
-                            f"  • {team} +{best_line} : {best_prob:.0%} (Cote min : {best_cote})"
-                        )
-                        track_prediction(
-                            event_id=fid, kickoff=m.get("event_date"), match=match_title,
-                            market="tirs_cadres_equipe", selection=f"{team} +{best_line}",
-                            line=best_line, direction="over", probability=best_prob,
-                            estimated_odds=best_cote, team_id=home_id if side == "home" else away_id,
-                            side=side, samples=profile["samples"],
-                        )
+                selection = select_team_sot(profile, line_probabilities)
+                if selection:
+                    best_line, best_prob = selection
+                    best_cote = round(1 / best_prob * 1.04, 2)
+                    picks_cadres_eq.append(
+                        f"⚽ {match_title}\n"
+                        f"  • {team} +{best_line} : {best_prob:.0%} (Cote min : {best_cote})"
+                    )
+                    track_prediction(
+                        event_id=fid, kickoff=m.get("event_date"), match=match_title,
+                        market="tirs_cadres_equipe", selection=f"{team} +{best_line}",
+                        line=best_line, direction="over", probability=best_prob,
+                        estimated_odds=best_cote, team_id=home_id if side == "home" else away_id,
+                        side=side, samples=profile["samples"],
+                        expected_mean=profile["average"], expected_variance=profile["variance"],
+                    )
 
         # ============================================
         # 3. CORNERS (D/E)
@@ -833,24 +798,13 @@ def main():
         for p_name, player_profile in all_players.items():
             if starters and player_profile.get("player_id") not in starters:
                 continue
-            # Garde-fous supplémentaires contre les faux signaux défensifs ou
-            # les moyennes gonflées par un très petit nombre de matchs.
-            if (
-                player_profile.get("samples", 0) < 4
-                or player_profile.get("avg_minutes", 0) < 55
-                or player_profile.get("hit_rate", 0) < 0.50
-                or not is_attacking_player(player_profile.get("position", ""))
-            ):
+            selection = select_player_sot(player_profile, line_probabilities)
+            if not selection:
                 continue
             avg_sots = player_profile["average"]
-            prob_05, _ = line_probabilities(
-                avg_sots, player_profile["variance"], 0.5, player_profile["samples"]
-            )
-            prob_15, _ = line_probabilities(
-                avg_sots, player_profile["variance"], 1.5, player_profile["samples"]
-            )
-
-            if prob_05 >= 0.70 and player_profile.get("hit_rate", 0) >= 0.55:
+            line, probability = selection
+            if line == 0.5:
+                prob_05 = probability
                 cote = round(1 / prob_05 * 1.04, 2)
                 picks_cadres_joueurs.append(
                     f"⚽ {match_title}\n  • {p_name} +0,5 : {prob_05:.0%} "
@@ -862,9 +816,11 @@ def main():
                     direction="over", probability=prob_05, estimated_odds=cote,
                     player_id=player_profile.get("player_id"), team_id=None,
                     samples=player_profile["samples"], avg_minutes=player_profile.get("avg_minutes"),
-                    lineup_source=lineup_source,
+                    lineup_source=lineup_source, historical_hit_rate=player_profile.get("hit_rate"),
+                    expected_mean=avg_sots, expected_variance=player_profile["variance"],
                 )
-            elif prob_15 >= 0.65 and player_profile.get("hit_rate", 0) >= 0.40:
+            elif line == 1.5:
+                prob_15 = probability
                 cote = round(1 / prob_15 * 1.04, 2)
                 picks_cadres_joueurs.append(
                     f"⚽ {match_title}\n  • {p_name} +1,5 : {prob_15:.0%} "
@@ -876,7 +832,8 @@ def main():
                     direction="over", probability=prob_15, estimated_odds=cote,
                     player_id=player_profile.get("player_id"), team_id=None,
                     samples=player_profile["samples"], avg_minutes=player_profile.get("avg_minutes"),
-                    lineup_source=lineup_source,
+                    lineup_source=lineup_source, historical_hit_rate=player_profile.get("hit_rate"),
+                    expected_mean=avg_sots, expected_variance=player_profile["variance"],
                 )
 
         if matchs_analyses >= 14 or (time.time() - start_time) > 280:

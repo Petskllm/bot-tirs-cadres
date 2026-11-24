@@ -1,7 +1,10 @@
 """Tests unitaires déterministes des helpers métier sans réseau ni stockage."""
 import unittest
+from unittest.mock import patch
 
 from api_only_stats import extract
+import backtest_bzzoiro as backtest
+from model_rules import is_attacking_player, select_player_sot, select_team_sot
 from tracking import _bucket, _number, _prediction_key, _won
 
 
@@ -40,6 +43,101 @@ class TrackingPureFunctionsTests(unittest.TestCase):
         new = _prediction_key({**base, "model_version": "v2.5"})
 
         self.assertNotEqual(old, new)
+
+
+class ShotOnTargetModelRulesTests(unittest.TestCase):
+    @staticmethod
+    def probabilities(values):
+        def calculate(mean, variance, line, samples):
+            return values[line], 1 - values[line]
+        return calculate
+
+    def test_team_selector_uses_production_threshold_and_best_line(self):
+        profile = {"average": 11.99, "variance": 10, "samples": 8}
+        selected = select_team_sot(profile, self.probabilities({3.5: 0.65, 4.5: 0.72}))
+        self.assertEqual(selected, (4.5, 0.72))
+
+    def test_team_selector_rejects_mean_at_cutoff_and_probability_below_cutoff(self):
+        probability_fn = self.probabilities({3.5: 0.649, 4.5: 0.64})
+        self.assertIsNone(select_team_sot(
+            {"average": 12, "variance": 10, "samples": 8}, probability_fn
+        ))
+        self.assertIsNone(select_team_sot(
+            {"average": 11, "variance": 10, "samples": 8}, probability_fn
+        ))
+
+    def test_player_selector_enforces_samples_minutes_hit_rate_and_position(self):
+        base = {
+            "average": 1.2, "variance": 1, "samples": 4,
+            "avg_minutes": 55, "hit_rate": 0.55, "position": "Forward",
+        }
+        probability_fn = self.probabilities({0.5: 0.70, 1.5: 0.65})
+        self.assertEqual(select_player_sot(base, probability_fn), (0.5, 0.70))
+        for changes in (
+            {"samples": 3}, {"avg_minutes": 54.99}, {"hit_rate": 0.49},
+            {"position": "Defender"}, {"position": ""},
+        ):
+            with self.subTest(changes=changes):
+                self.assertIsNone(select_player_sot({**base, **changes}, probability_fn))
+
+    def test_player_selector_falls_back_to_over_15_only_when_eligible(self):
+        profile = {
+            "average": 1.2, "variance": 1, "samples": 4,
+            "avg_minutes": 60, "hit_rate": 0.50, "position": "AM",
+        }
+        probability_fn = self.probabilities({0.5: 0.69, 1.5: 0.65})
+        self.assertEqual(select_player_sot(profile, probability_fn), (1.5, 0.65))
+
+    def test_position_filter_accepts_attacking_midfielder_not_defender(self):
+        self.assertTrue(is_attacking_player("Attacking Midfielder"))
+        self.assertFalse(is_attacking_player("Centre Back"))
+
+
+class BacktestProfileTests(unittest.TestCase):
+    def test_team_profile_skips_events_with_stats_explicitly_unavailable(self):
+        events = [
+            {"id": "unavailable", "home_team_id": 7},
+            {"id": "available", "home_team_id": 7},
+        ]
+
+        def cached_get(endpoint):
+            if endpoint.endswith("/availability/"):
+                return {"available": {"stats": endpoint.split("/")[1] != "unavailable"}}
+            if endpoint.endswith("/stats/"):
+                return {"stats": {"home": {"shots_on_target": 5}}}
+            return {}
+
+        with patch.object(backtest, "prior_events", return_value=events), patch.object(
+            backtest, "cached_get", side_effect=cached_get
+        ):
+            result = backtest.profile(7, "home", None, None)
+
+        self.assertEqual(result["shots_on_target"]["samples"], 1)
+        self.assertEqual(result["shots_on_target"]["average"], 5.0)
+
+    def test_player_profile_matches_production_eligibility_inputs(self):
+        events = [{"id": f"event-{index}"} for index in range(4)]
+
+        def cached_get(endpoint):
+            if endpoint.endswith("/availability/"):
+                return {"available": {"player_stats": True}}
+            if endpoint.endswith("/player-stats/"):
+                player_id = endpoint.split("/")[1]
+                return {"player_stats": [{
+                    "player_id": "p1", "team_id": 7, "minutes_played": 90,
+                    "shots_on_target": 1, "position": "Forward",
+                }]}
+            return {}
+
+        with patch.object(backtest, "prior_events", return_value=events), patch.object(
+            backtest, "cached_get", side_effect=cached_get
+        ):
+            result = backtest.player_profiles(7, None, None)
+
+        self.assertEqual(result["p1"]["samples"], 4)
+        self.assertEqual(result["p1"]["avg_minutes"], 90)
+        self.assertEqual(result["p1"]["hit_rate"], 1)
+        self.assertEqual(result["p1"]["position"], "forward")
 
 
 class ApiOnlyPureFunctionsTests(unittest.TestCase):

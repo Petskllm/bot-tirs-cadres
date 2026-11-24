@@ -15,17 +15,21 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
 import requests
+from model_rules import normalized_player_position, select_player_sot, select_team_sot
 
 BASE = "https://sports.bzzoiro.com/api/v2"
 TOKEN = os.getenv("BZZOIRO_TOKEN")
-if not TOKEN:
-    raise SystemExit("BZZOIRO_TOKEN est obligatoire. Aucun appel Telegram n'est utilisé.")
-HEADERS = {"Authorization": f"Token {TOKEN}"}
 
 
 def api_get(endpoint):
+    if not TOKEN:
+        return None
     try:
-        response = requests.get(f"{BASE}/{endpoint}", headers=HEADERS, timeout=20)
+        response = requests.get(
+            f"{BASE}/{endpoint}",
+            headers={"Authorization": f"Token {TOKEN}"},
+            timeout=20,
+        )
         return response.json() if response.status_code == 200 else None
     except (requests.RequestException, ValueError):
         return None
@@ -84,8 +88,12 @@ def prior_events(team_id, kickoff, league_id=None, days=150):
 def profile(team_id, side, kickoff, league_id, limit=10):
     fields = ("total_shots", "shots_on_target", "corner_kicks", "yellow_cards")
     values = defaultdict(list)
-    events = prior_events(team_id, kickoff, league_id)[:limit]
+    events = prior_events(team_id, kickoff, league_id, days=120)[:limit]
     for index, event in enumerate(events):
+        availability = cached_get(f"events/{event['id']}/availability/") or {}
+        available = availability.get("available", {}) if isinstance(availability, dict) else {}
+        if available.get("stats") is False:
+            continue
         stats = cached_get(f"events/{event['id']}/stats/") or {}
         if not stats.get("stats"):
             continue
@@ -111,7 +119,11 @@ def profile(team_id, side, kickoff, league_id, limit=10):
 
 def player_profiles(team_id, kickoff, league_id, limit=7):
     histories = defaultdict(list)
-    for index, event in enumerate(prior_events(team_id, kickoff, league_id, days=100)[:limit]):
+    for index, event in enumerate(prior_events(team_id, kickoff, league_id, days=90)[:limit]):
+        availability = cached_get(f"events/{event['id']}/availability/") or {}
+        available = availability.get("available", {}) if isinstance(availability, dict) else {}
+        if available.get("player_stats") is False:
+            continue
         stats = cached_get(f"events/{event['id']}/player-stats/") or {}
         weight = max(1.0, 1.5 - index * 0.1)
         for player in stats.get("player_stats", []):
@@ -123,18 +135,39 @@ def player_profiles(team_id, kickoff, league_id, limit=7):
             except (TypeError, ValueError):
                 continue
             if player.get("player_id") and minutes >= 30:
-                histories[str(player["player_id"])].append((shots_on_target, weight, minutes))
+                player_id = str(player["player_id"])
+                position = normalized_player_position(
+                    {"position": player.get("position", player.get("role", ""))}
+                )
+                if not position:
+                    profile_data = cached_get(f"players/{player_id}/") or {}
+                    if isinstance(profile_data.get("player"), dict):
+                        profile_data = {**profile_data, **profile_data["player"]}
+                    position = normalized_player_position(profile_data)
+                histories[player_id].append((shots_on_target, weight, minutes, position))
     result = {}
     for player_id, history in histories.items():
-        if len(history) < 3:
+        if len(history) < 4:
             continue
         weight_sum = sum(item[1] for item in history)
         average_minutes = sum(item[2] * item[1] for item in history) / weight_sum
-        if average_minutes < 35:
+        hit_rate = sum(item[1] for item in history if item[0] >= 1.0) / weight_sum
+        positions = [item[3] for item in history if item[3]]
+        position = positions[-1] if positions else ""
+        if average_minutes < 55:
+            continue
+        if not position:
             continue
         average = sum(item[0] * item[1] for item in history) / weight_sum
         variance = sum(item[1] * (item[0] - average) ** 2 for item in history) / weight_sum
-        result[player_id] = {"average": average, "variance": variance, "samples": len(history)}
+        result[player_id] = {
+            "average": average,
+            "variance": variance,
+            "samples": len(history),
+            "avg_minutes": average_minutes,
+            "hit_rate": hit_rate,
+            "position": position,
+        }
     return result
 
 
@@ -206,6 +239,23 @@ def lineup_starter_ids(lineups):
     return found
 
 
+def last_official_starters(team_id, kickoff):
+    """Même repli que la production : dernière composition d'un match terminé."""
+    for event in prior_events(team_id, kickoff, days=120)[:10]:
+        lineups = cached_get(f"events/{event['id']}/lineups/") or {}
+        payload = lineups.get("lineups", lineups) if isinstance(lineups, dict) else {}
+        side = "home" if str(event.get("home_team_id")) == str(team_id) else "away"
+        players = payload.get(side, {}).get("players", [])
+        starters = {
+            str(player.get("id", player.get("player_id")))
+            for player in players
+            if isinstance(player, dict) and player.get("id", player.get("player_id"))
+        }
+        if starters:
+            return starters
+    return set()
+
+
 def add_result(rows, market, event, selection, probability, actual, won):
     rows.append({
         "event_id": event.get("id"),
@@ -249,6 +299,8 @@ def run(args):
         starters = set()
         if availability.get("lineup_status") == "confirmed" and available.get("lineups"):
             starters = lineup_starter_ids(cached_get(f"events/{event['id']}/lineups/") or {})
+        if not starters:
+            starters = last_official_starters(home_id, kickoff) | last_official_starters(away_id, kickoff)
         if actual["total_shots"] is None or actual["corners"] is None or actual["cards"] is None:
             skipped["statistiques équipe incomplètes"] += 1
             continue
@@ -286,36 +338,31 @@ def run(args):
             if probability >= 0.56:
                 add_result(rows, "cartons", event, "+4,5", probability, actual["cards"], actual["cards"] >= 5)
 
-        for team_key, team_id, side, actual_key in (("home", home_id, "home", "home_sot"), ("away", away_id, "away", "away_sot")):
-            team_profile = profile(team_id, side, kickoff, league_id)
-            sot = team_profile.get("shots_on_target")
-            if not sot:
-                continue
-            candidates = []
-            for line in (3.5, 4.5):
-                probability, _ = line_probabilities(sot["average"], sot["variance"], line, sot["samples"])
-                if probability >= 0.59:
-                    candidates.append((line, probability))
-            if candidates:
-                line, probability = max(candidates, key=lambda item: item[1])
-                add_result(rows, "tirs_cadres_equipe", event, f"{team_key} +{line}", probability, actual[actual_key], actual[actual_key] >= line + 0.5)
+        if home.get("shots_on_target") and away.get("shots_on_target"):
+            for team_key, team_id, side, actual_key in (("home", home_id, "home", "home_sot"), ("away", away_id, "away", "away_sot")):
+                team_profile = home if side == "home" else away
+                sot = team_profile.get("shots_on_target")
+                if not sot or actual[actual_key] is None:
+                    continue
+                selection = select_team_sot(sot, line_probabilities)
+                if selection:
+                    line, probability = selection
+                    add_result(rows, "tirs_cadres_equipe", event, f"{team_key} +{line}", probability, actual[actual_key], actual[actual_key] >= line + 0.5)
 
-        for team_id in (home_id, away_id):
-            profiles = player_profiles(team_id, kickoff, league_id)
-            for player_id, player_profile in profiles.items():
-                if starters and player_id not in starters:
-                    continue
-                prob05, _ = line_probabilities(player_profile["average"], player_profile["variance"], 0.5, player_profile["samples"])
-                prob15, _ = line_probabilities(player_profile["average"], player_profile["variance"], 1.5, player_profile["samples"])
-                if prob05 >= 0.62:
-                    selection, probability, line = "+0,5", prob05, 0.5
-                elif prob15 >= 0.52:
-                    selection, probability, line = "+1,5", prob15, 1.5
-                else:
-                    continue
-                actual_player = actual["player_sot"].get(player_id)
-                if actual_player is not None:
-                    add_result(rows, "tirs_cadres_joueur", event, f"{player_id} {selection}", probability, actual_player, actual_player >= line + 0.5)
+        if starters:
+            for team_id in (home_id, away_id):
+                profiles = player_profiles(team_id, kickoff, league_id)
+                for player_id, player_profile in profiles.items():
+                    if player_id not in starters:
+                        continue
+                    selection = select_player_sot(player_profile, line_probabilities)
+                    if not selection:
+                        continue
+                    line, probability = selection
+                    label = "+0,5" if line == 0.5 else "+1,5"
+                    actual_player = actual["player_sot"].get(player_id)
+                    if actual_player is not None:
+                        add_result(rows, "tirs_cadres_joueur", event, f"{player_id} {label}", probability, actual_player, actual_player >= line + 0.5)
         if index % 5 == 0:
             print(f"Matchs traités : {index}/{len(events)}")
 
@@ -343,6 +390,8 @@ def run(args):
 
 
 def main():
+    if not TOKEN:
+        raise SystemExit("BZZOIRO_TOKEN est obligatoire. Aucun appel Telegram n'est utilisé.")
     parser = argparse.ArgumentParser(description="Backtest local des marchés du bot tirs cadrés")
     parser.add_argument("--start", required=True, help="Date de début YYYY-MM-DD")
     parser.add_argument("--end", required=True, help="Date de fin YYYY-MM-DD")
