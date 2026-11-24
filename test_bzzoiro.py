@@ -305,6 +305,35 @@ def lineup_starter_ids(lineups):
     return found
 
 
+@lru_cache(maxsize=256)
+def get_last_official_starters(team_id):
+    """Retourne les titulaires du dernier match terminé avec une composition."""
+    today = utc_date()
+    past = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y-%m-%d")
+    events = api_get(
+        f"events/?team_id={team_id}&date_from={past}&date_to={today}&limit=50"
+    )
+    if not events or not isinstance(events.get("results"), list):
+        return set()
+    finished = [event for event in events["results"] if event.get("status") == "finished"]
+    finished.sort(key=lambda event: event.get("event_date", ""), reverse=True)
+    for event in finished[:10]:
+        lineups = get_event_lineups(event.get("id"))
+        payload = lineups.get("lineups", lineups) if isinstance(lineups, dict) else {}
+        for side in ("home", "away"):
+            if str(event.get(f"{side}_team_id")) != str(team_id):
+                continue
+            players = payload.get(side, {}).get("players", [])
+            starters = {
+                str(player.get("id", player.get("player_id")))
+                for player in players
+                if isinstance(player, dict) and player.get("id", player.get("player_id"))
+            }
+            if starters:
+                return starters
+    return set()
+
+
 def attacking_shot_adjustment(event, side):
     """Réduit prudemment le volume attendu si une absence offensive est certaine."""
     payload = event.get("unavailable_players")
@@ -365,6 +394,47 @@ def get_player_name(player_id):
     return f"Joueur {player_id}"
 
 
+@lru_cache(maxsize=1024)
+def get_player_profile(player_id):
+    """Retourne le profil Bzzoiro d'un joueur quand il est disponible."""
+    data = api_get(f"players/{player_id}/") or {}
+    if isinstance(data.get("player"), dict):
+        return {**data, **data["player"]}
+    return data if isinstance(data, dict) else {}
+
+
+def normalized_player_position(profile):
+    """Normalise la position pour filtrer les profils défensifs."""
+    if not isinstance(profile, dict):
+        return ""
+    value = profile.get("position", profile.get("position_name", profile.get("role", "")))
+    return " ".join(str(value).lower().replace("_", " ").split())
+
+
+def is_attacking_player(position):
+    """Refuse les gardiens/défenseurs; accepte les milieux offensifs et attaquants."""
+    position = normalized_player_position({"position": position})
+    if not position:
+        return False
+    defensive_tokens = (
+        "goalkeeper", "goal keeper", "keeper", "defender", "centre back",
+        "center back", "centre-back", "center-back", "full back", "full-back",
+        "left back", "right back", "wing back", "sweeper", "goalie",
+    )
+    if any(token in position for token in defensive_tokens):
+        return False
+    defensive_codes = {"gk", "gb", "df", "d", "cb", "dc", "lb", "rb", "lwb", "rwb", "dl", "dr"}
+    if position in defensive_codes:
+        return False
+    attacking_tokens = (
+        "forward", "striker", "attacker", "winger", "midfielder", "midfield",
+        "forward", "second striker", "offensive", "am", "wing",
+    )
+    return position in {"f", "fw", "st", "cf", "lf", "rf", "m", "mf", "am"} or any(
+        token in position for token in attacking_tokens
+    )
+
+
 def get_players_sot_history(team_id, league_id=None):
     today = utc_date()
     past = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
@@ -402,6 +472,10 @@ def get_players_sot_history(team_id, league_id=None):
                 name = get_player_name(player_id)
                 if not name:
                     continue
+                profile = get_player_profile(player_id)
+                position = normalized_player_position(
+                    {"position": p.get("position", p.get("role", ""))}
+                ) or normalized_player_position(profile)
                 try:
                     sots = float(p.get("shots_on_target", 0) or 0)
                 except (TypeError, ValueError):
@@ -409,24 +483,32 @@ def get_players_sot_history(team_id, league_id=None):
                 if name not in player_history:
                     player_history[name] = []
                     player_ids[name] = str(player_id)
-                player_history[name].append((sots, weight, minutes))
+                player_history[name].append((sots, weight, minutes, position))
 
     weighted_players = {}
     for name, history in player_history.items():
-        if len(history) >= 3:
-            total_w = sum(w for v, w, mins in history)
-            avg = sum(v * w for v, w, mins in history) / total_w
-            variance = sum(w * (v - avg) ** 2 for v, w, mins in history) / total_w
-            avg_minutes = sum(mins * w for v, w, mins in history) / total_w
-            if avg_minutes < 35:
-                continue
-            weighted_players[name] = {
-                "average": avg,
-                "variance": variance,
-                "samples": len(history),
-                "avg_minutes": avg_minutes,
-                "player_id": player_ids.get(name),
-            }
+        if len(history) < 4:
+            continue
+        positions = [position for _, _, _, position in history if position]
+        position = positions[-1] if positions else ""
+        if not is_attacking_player(position):
+            continue
+        total_w = sum(w for v, w, mins, pos in history)
+        avg = sum(v * w for v, w, mins, pos in history) / total_w
+        variance = sum(w * (v - avg) ** 2 for v, w, mins, pos in history) / total_w
+        avg_minutes = sum(mins * w for v, w, mins, pos in history) / total_w
+        hit_rate = sum(w for v, w, mins, pos in history if v >= 1.0) / total_w
+        if avg_minutes < 55:
+            continue
+        weighted_players[name] = {
+            "average": avg,
+            "variance": variance,
+            "samples": len(history),
+            "avg_minutes": avg_minutes,
+            "hit_rate": hit_rate,
+            "position": position,
+            "player_id": player_ids.get(name),
+        }
 
     return weighted_players
 
@@ -498,6 +580,12 @@ def main():
         starters = set()
         if available.get("lineups") and lineup_status == "confirmed":
             starters = lineup_starter_ids(get_event_lineups(fid))
+        lineup_source = "composition confirmée"
+        if not starters:
+            # Si la composition du jour n'est pas encore publiée, prendre la
+            # dernière composition officielle connue, jamais les remplaçants.
+            starters = get_last_official_starters(home_id) | get_last_official_starters(away_id)
+            lineup_source = "dernière composition officielle connue" if starters else "indisponible"
         prediction = get_event_prediction(fid) if available.get("prediction") else {}
         odds = get_event_odds(fid) if available.get("odds") else {}
         bzzoiro_corners_prob = bzzoiro_corner_probability(prediction)
@@ -665,8 +753,22 @@ def main():
         a_players = get_players_sot_history(away_id, l_id)
         all_players = {**h_players, **a_players}
 
+        # Sans composition du jour ni dernière composition officielle, on ne
+        # peut pas valider le temps de jeu : aucun marché joueur n'est publié.
+        if not starters:
+            all_players = {}
+
         for p_name, player_profile in all_players.items():
             if starters and player_profile.get("player_id") not in starters:
+                continue
+            # Garde-fous supplémentaires contre les faux signaux défensifs ou
+            # les moyennes gonflées par un très petit nombre de matchs.
+            if (
+                player_profile.get("samples", 0) < 4
+                or player_profile.get("avg_minutes", 0) < 55
+                or player_profile.get("hit_rate", 0) < 0.50
+                or not is_attacking_player(player_profile.get("position", ""))
+            ):
                 continue
             avg_sots = player_profile["average"]
             prob_05, _ = line_probabilities(
@@ -676,10 +778,11 @@ def main():
                 avg_sots, player_profile["variance"], 1.5, player_profile["samples"]
             )
 
-            if prob_05 >= 0.70:
+            if prob_05 >= 0.70 and player_profile.get("hit_rate", 0) >= 0.55:
                 cote = round(1 / prob_05 * 1.04, 2)
                 picks_cadres_joueurs.append(
-                    f"⚽ {match_title}\n  • {p_name} +0,5 : {prob_05:.0%} (Cote min : {cote})"
+                    f"⚽ {match_title}\n  • {p_name} +0,5 : {prob_05:.0%} "
+                    f"(Cote min : {cote}, {lineup_source}, historique : {player_profile['hit_rate']:.0%})"
                 )
                 track_prediction(
                     event_id=fid, kickoff=m.get("event_date"), match=match_title,
@@ -687,11 +790,13 @@ def main():
                     direction="over", probability=prob_05, estimated_odds=cote,
                     player_id=player_profile.get("player_id"), team_id=None,
                     samples=player_profile["samples"], avg_minutes=player_profile.get("avg_minutes"),
+                    lineup_source=lineup_source,
                 )
-            elif prob_15 >= 0.65:
+            elif prob_15 >= 0.65 and player_profile.get("hit_rate", 0) >= 0.40:
                 cote = round(1 / prob_15 * 1.04, 2)
                 picks_cadres_joueurs.append(
-                    f"⚽ {match_title}\n  • {p_name} +1,5 : {prob_15:.0%} (Cote min : {cote})"
+                    f"⚽ {match_title}\n  • {p_name} +1,5 : {prob_15:.0%} "
+                    f"(Cote min : {cote}, {lineup_source}, historique : {player_profile['hit_rate']:.0%})"
                 )
                 track_prediction(
                     event_id=fid, kickoff=m.get("event_date"), match=match_title,
@@ -699,6 +804,7 @@ def main():
                     direction="over", probability=prob_15, estimated_odds=cote,
                     player_id=player_profile.get("player_id"), team_id=None,
                     samples=player_profile["samples"], avg_minutes=player_profile.get("avg_minutes"),
+                    lineup_source=lineup_source,
                 )
 
         if matchs_analyses >= 14 or (time.time() - start_time) > 280:
