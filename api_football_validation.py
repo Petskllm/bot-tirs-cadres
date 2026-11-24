@@ -110,3 +110,45 @@ def format_report(report):
         f"({report.get('api_fixtures', 0)} fixtures récupérées). "
         "Contrôle informatif, aucune sélection modifiée."
     )
+
+
+def diagnose_api_football(date=None):
+    """Teste la couverture des endpoints sans publier de pronostic.
+
+    Un seul match sert d'échantillon pour limiter le quota : fixtures,
+    statistiques, joueurs, compositions et cotes. Aucun secret n'est renvoyé.
+    """
+    token = os.getenv("API_FOOTBALL_KEY")
+    if not token:
+        return {"enabled": False, "reason": "API_FOOTBALL_KEY absente"}
+    date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    result = {"enabled": True, "date": date, "endpoints": {}}
+    try:
+        fixtures = _api_get("fixtures", {"date": date}, token)
+        rows = fixtures.get("response", [])
+        result["fixtures"] = len(rows)
+        result["endpoints"]["fixtures"] = {"ok": True, "count": len(rows)}
+    except (requests.RequestException, ValueError, RuntimeError) as exc:
+        result["endpoints"]["fixtures"] = {"ok": False, "error": type(exc).__name__}
+        return result
+    if not rows:
+        return result
+    fixture_id = rows[0].get("fixture", {}).get("id")
+    result["sample_fixture"] = fixture_id
+    checks = {
+        "statistics": ("fixtures/statistics", {"fixture": fixture_id}),
+        "players": ("fixtures/players", {"fixture": fixture_id}),
+        "lineups": ("fixtures/lineups", {"fixture": fixture_id}),
+        "odds": ("odds", {"fixture": fixture_id}),
+    }
+    for name, (path, params) in checks.items():
+        try:
+            payload = _api_get(path, params, token)
+            response = payload.get("response", [])
+            result["endpoints"][name] = {
+                "ok": True,
+                "count": len(response) if isinstance(response, list) else 1,
+            }
+        except (requests.RequestException, ValueError, RuntimeError) as exc:
+            result["endpoints"][name] = {"ok": False, "error": type(exc).__name__}
+    return result

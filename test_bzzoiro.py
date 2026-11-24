@@ -5,13 +5,14 @@ import time
 from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from tracking import build_reports, record_predictions, settle_pending
-from api_football_validation import format_report, validate_matches
+from api_football_validation import diagnose_api_football, format_report, validate_matches
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BZZOIRO_TOKEN")
 TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT = os.getenv("CHAT_ID")
 DRY_RUN = os.getenv("DRY_RUN", "0").lower() in {"1", "true", "yes"}
+API_FOOTBALL_DIAGNOSTIC = os.getenv("API_FOOTBALL_DIAGNOSTIC", "0").lower() in {"1", "true", "yes"}
 BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
 MODEL_VERSION = "v2.4-thresholds-65-lineups"
@@ -27,7 +28,9 @@ CARDS_MIN_EXPECTED = 4.5
 def utc_date():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-if not TOKEN or (not DRY_RUN and not all([TG_TOKEN, TG_CHAT])):
+if (not TOKEN and not API_FOOTBALL_DIAGNOSTIC) or (
+    not DRY_RUN and not API_FOOTBALL_DIAGNOSTIC and not all([TG_TOKEN, TG_CHAT])
+):
     print("❌ Secrets manquants")
     exit(1)
 
@@ -546,6 +549,11 @@ def get_players_sot_history(team_id, league_id=None):
     return weighted_players
 
 def main():
+    if API_FOOTBALL_DIAGNOSTIC:
+        import json
+        print("🔬 Diagnostic API-Football uniquement : aucun Telegram, aucun pronostic")
+        print(json.dumps(diagnose_api_football(utc_date()), ensure_ascii=False, indent=2))
+        return
     if not DRY_RUN:
         settled = settle_pending(api_get)
         if settled:
