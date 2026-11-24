@@ -154,7 +154,26 @@ def main():
     parser.add_argument("--date", default=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     parser.add_argument("--max-matches", type=int, default=5)
     args = parser.parse_args()
-    print(json.dumps(compare(args.date, max(1, min(args.max_matches, 5))), ensure_ascii=False, indent=2))
+    try:
+        report = compare(args.date, max(1, min(args.max_matches, 5)))
+    except requests.HTTPError as exc:
+        response = exc.response
+        report = {
+            "date": args.date,
+            "max_matches": max(1, min(args.max_matches, 5)),
+            "comparison_status": "unavailable",
+            "error": f"HTTP {response.status_code if response is not None else 'unknown'}",
+            "message": "Une source a limité la requête ; aucun résultat de couverture n'est déduit.",
+        }
+    except (requests.RequestException, ValueError, RuntimeError) as exc:
+        report = {
+            "date": args.date,
+            "max_matches": max(1, min(args.max_matches, 5)),
+            "comparison_status": "unavailable",
+            "error": type(exc).__name__,
+            "message": "La comparaison n'a pas pu être réalisée ; aucun résultat partiel n'est présenté.",
+        }
+    print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
