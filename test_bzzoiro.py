@@ -4,6 +4,7 @@ import math
 import time
 from functools import lru_cache
 from datetime import datetime, timedelta, timezone
+from tracking import build_reports, record_predictions, settle_pending
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BZZOIRO_TOKEN")
@@ -12,6 +13,7 @@ TG_CHAT = os.getenv("CHAT_ID")
 DRY_RUN = os.getenv("DRY_RUN", "0").lower() in {"1", "true", "yes"}
 BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
+MODEL_VERSION = "v2.4-thresholds-65-lineups"
 
 
 def utc_date():
@@ -429,6 +431,11 @@ def get_players_sot_history(team_id, league_id=None):
     return weighted_players
 
 def main():
+    if not DRY_RUN:
+        settled = settle_pending(api_get)
+        if settled:
+            print(f"✅ Pronostics réglés : {settled}")
+        build_reports()
     print("⏳ Récupération de la liste des ligues...")
     league_map = {}
     all_leagues = api_get("leagues/")
@@ -441,7 +448,12 @@ def main():
 
     events = api_get(f"events/?date_from={today}&date_to={today}&limit=200")
     if not events or not events.get("results"):
-        send_telegram(f"🤷‍♂️ Aucun match dans l'API pour le {today}.")
+        message = f"🤷‍♂️ Aucun match dans l'API pour le {today}."
+        if DRY_RUN:
+            print("🧪 DRY_RUN actif : aucun message Telegram envoyé")
+            print(message)
+        else:
+            send_telegram(message)
         return
 
     matches = events["results"]
@@ -452,6 +464,10 @@ def main():
     picks_corners = []
     picks_cartons = []
     combo_pool_totals = []
+    prediction_records = []
+
+    def track_prediction(**values):
+        prediction_records.append(values)
 
     matchs_analyses = 0
     matchs_ignores = 0
@@ -537,6 +553,13 @@ def main():
                         "prob": best_prob,
                         "cote": best_cote
                     })
+                    track_prediction(
+                        event_id=fid, kickoff=m.get("event_date"), match=match_title,
+                        market="total_tirs", selection=best_label, line=26.5,
+                        direction="over" if best_label == "+27" else "under",
+                        probability=best_prob, estimated_odds=best_cote,
+                        samples=sample_count,
+                    )
 
         # ============================================
         # 2. TIRS CADRÉS ÉQUIPES (D/E)
@@ -559,6 +582,13 @@ def main():
                         picks_cadres_eq.append(
                             f"⚽ {match_title}\n"
                             f"  • {team} +{best_line} : {best_prob:.0%} (Cote min : {best_cote})"
+                        )
+                        track_prediction(
+                            event_id=fid, kickoff=m.get("event_date"), match=match_title,
+                            market="tirs_cadres_equipe", selection=f"{team} +{best_line}",
+                            line=best_line, direction="over", probability=best_prob,
+                            estimated_odds=best_cote, team_id=home_id if side == "home" else away_id,
+                            side=side, samples=profile["samples"],
                         )
 
         # ============================================
@@ -590,6 +620,13 @@ def main():
                         f"  Corners attendus : {total_corners:.1f}\n"
                         f"  • +9,5 corners : {best_prob:.0%} (Cote estimée : {best_cote}){confirmation}"
                     )
+                    track_prediction(
+                        event_id=fid, kickoff=m.get("event_date"), match=match_title,
+                        market="corners", selection="+9,5", line=9.5, direction="over",
+                        probability=best_prob, estimated_odds=best_cote,
+                        samples=corners_samples, bzzoiro_probability=bzzoiro_corners_prob,
+                        consensus_odds=bzzoiro_corners_odds,
+                    )
 
         # ============================================
         # 4. CARTONS (D/E)
@@ -613,6 +650,12 @@ def main():
                         + f"  Cartons attendus : {total_cards:.1f}"
                         + (f" (arbitre : {referee_adjustment:+.1f})\n" if referee_adjustment else "\n")
                         + f"  • +4,5 cartons : {best_prob:.0%} (Cote estimée : {best_cote})"
+                    )
+                    track_prediction(
+                        event_id=fid, kickoff=m.get("event_date"), match=match_title,
+                        market="cartons", selection="+4,5", line=4.5, direction="over",
+                        probability=best_prob, estimated_odds=best_cote,
+                        samples=cards_samples, referee_adjustment=referee_adjustment,
                     )
 
         # ============================================
@@ -638,10 +681,24 @@ def main():
                 picks_cadres_joueurs.append(
                     f"⚽ {match_title}\n  • {p_name} +0,5 : {prob_05:.0%} (Cote min : {cote})"
                 )
+                track_prediction(
+                    event_id=fid, kickoff=m.get("event_date"), match=match_title,
+                    market="tirs_cadres_joueur", selection=f"{p_name} +0,5", line=0.5,
+                    direction="over", probability=prob_05, estimated_odds=cote,
+                    player_id=player_profile.get("player_id"), team_id=None,
+                    samples=player_profile["samples"], avg_minutes=player_profile.get("avg_minutes"),
+                )
             elif prob_15 >= 0.65:
                 cote = round(1 / prob_15 * 1.04, 2)
                 picks_cadres_joueurs.append(
                     f"⚽ {match_title}\n  • {p_name} +1,5 : {prob_15:.0%} (Cote min : {cote})"
+                )
+                track_prediction(
+                    event_id=fid, kickoff=m.get("event_date"), match=match_title,
+                    market="tirs_cadres_joueur", selection=f"{p_name} +1,5", line=1.5,
+                    direction="over", probability=prob_15, estimated_odds=cote,
+                    player_id=player_profile.get("player_id"), team_id=None,
+                    samples=player_profile["samples"], avg_minutes=player_profile.get("avg_minutes"),
                 )
 
         if matchs_analyses >= 14 or (time.time() - start_time) > 280:
@@ -698,6 +755,10 @@ def main():
         print(msg)
         return
 
+    added = record_predictions(prediction_records, MODEL_VERSION)
+    report = build_reports()
+    print(f"📚 Nouvelles sélections enregistrées : {added}")
+    print(f"📊 Pronostics réglés suivis : {report.get('settled_predictions', 0)}")
     send_telegram(msg)
     print("✅ Message envoyé !")
 
