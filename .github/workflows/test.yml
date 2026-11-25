@@ -50,12 +50,16 @@ jobs:
       - name: Installer les dépendances
         run: python -m pip install -r requirements.txt
       - name: Tester le suivi et les modes sans effets externes
-        run: python -m unittest -v test_pure_functions.py test_bot_modes.py test_sportapi_bot.py
+        run: python -m unittest -v test_pure_functions.py test_bot_modes.py test_sportapi_bot.py test_sportapi_dry_run_preflight.py
+      - name: Contrôler le quota SportAPI avant le bot
+        if: ${{ !inputs.source_comparison && !inputs.api_football_stats && !inputs.api_football_diagnostic }}
+        env:
+          SPORTAPI_KEY: ${{ secrets.SPORTAPI_KEY }}
+        run: python sportapi_dry_run_preflight.py
       - name: Exécuter le bot SportAPI
         if: ${{ !inputs.source_comparison && !inputs.api_football_stats && !inputs.api_football_diagnostic }}
         env:
           SPORTAPI_KEY: ${{ secrets.SPORTAPI_KEY }}
-          BZZOIRO_TOKEN: ${{ secrets.BZZOIRO_TOKEN }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           DRY_RUN: ${{ inputs.dry_run }}

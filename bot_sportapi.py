@@ -147,8 +147,8 @@ def main():
         raise SystemExit("SPORTAPI_KEY absent : aucun appel effectué.")
     if not DRY_RUN and not TRACK_ONLY and not all((os.getenv("TELEGRAM_TOKEN"), os.getenv("CHAT_ID"))):
         raise SystemExit("Secrets Telegram manquants; aucun pronostic envoyé.")
-    if should_persist_results(DRY_RUN, TRACK_ONLY):
-        settled = settle_pending(_bzz_get, api_get)
+    if TRACK_ONLY:
+        settled = settle_pending(None, api_get)
         print(f"Pronostics antérieurs réglés: {settled}")
         build_reports()
 
@@ -273,9 +273,19 @@ def main():
         lines.append("Aucune sélection ne passe les filtres aujourd'hui.")
     message = "\n".join(lines)
     _print_api_usage()
+    usage = request_usage()
+    budget_exhausted = usage["limit_reached"] or (
+        usage["limit"] is not None and usage["requests"] >= usage["limit"]
+    )
+    if not DRY_RUN and budget_exhausted:
+        print("Mode persistant/live annulé : budget de requêtes atteint; aucune prédiction enregistrée ni aucun message Telegram envoyé.")
+        return
     if not should_persist_results(DRY_RUN, TRACK_ONLY):
         print("DRY_RUN actif : aucun message Telegram envoyé, aucune prédiction persistée.")
         print(message)
+        return
+    if not DRY_RUN and not predictions:
+        print("Aucune sélection : aucun enregistrement ni message Telegram envoyé.")
         return
     added = record_predictions(predictions, MODEL_VERSION)
     report = build_reports()

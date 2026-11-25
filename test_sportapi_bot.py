@@ -7,6 +7,11 @@ import bot_sportapi as bot
 
 
 class SportAPIBotModeTests(unittest.TestCase):
+    @staticmethod
+    def live_match():
+        return {"id": 75, "status": "Scheduled", "league_id": 1,
+                "home_id": 21, "away_id": 22, "home_team": "Home", "away_team": "Away"}
+
     def test_dry_run_only_reports_three_supported_markets_without_side_effects(self):
         match = {"id": 55, "status": "Scheduled", "league_id": 1,
                  "home_id": 11, "away_id": 12, "home_team": "Home", "away_team": "Away",
@@ -67,6 +72,52 @@ class SportAPIBotModeTests(unittest.TestCase):
         self.assertIn("+27 tirs : 80%", output.getvalue())
         record.assert_not_called()
         send.assert_not_called()
+
+    def test_live_budget_exhaustion_prevents_persistence_and_telegram(self):
+        output = io.StringIO()
+        usage = {"requests": 38, "limit": 38, "limit_reached": True, "daily_remaining": 20}
+        with patch.object(bot, "API_KEY", "test-key"), patch.object(bot, "DRY_RUN", False), \
+             patch.object(bot, "TRACK_ONLY", False), patch.object(bot, "request_usage", return_value=usage), \
+             patch.object(bot, "sportapi_today", return_value="2026-11-26"), \
+             patch.object(bot, "fixtures_on_date", return_value=[self.live_match()]), \
+             patch.object(bot, "_league_map", return_value={1: "premier league"}), \
+             patch.object(bot, "load_models", return_value={}), \
+             patch.object(bot, "get_team_shot_profile", return_value={}), \
+             patch.object(bot, "get_team_card_profile", return_value={}), \
+             patch.object(bot, "settle_pending") as settle, \
+             patch.object(bot, "record_predictions") as record, patch.object(bot, "build_reports") as reports, \
+             patch.object(bot, "_send_telegram") as send, \
+             patch.dict("os.environ", {"TELEGRAM_TOKEN": "test", "CHAT_ID": "test"}), \
+             contextlib.redirect_stdout(output):
+            bot.main()
+        settle.assert_not_called()
+        record.assert_not_called()
+        reports.assert_not_called()
+        send.assert_not_called()
+        self.assertIn("Mode persistant/live annulé", output.getvalue())
+
+    def test_live_without_selections_does_not_persist_or_send_empty_message(self):
+        output = io.StringIO()
+        usage = {"requests": 5, "limit": 100, "limit_reached": False, "daily_remaining": 200}
+        with patch.object(bot, "API_KEY", "test-key"), patch.object(bot, "DRY_RUN", False), \
+             patch.object(bot, "TRACK_ONLY", False), patch.object(bot, "request_usage", return_value=usage), \
+             patch.object(bot, "sportapi_today", return_value="2026-11-26"), \
+             patch.object(bot, "fixtures_on_date", return_value=[self.live_match()]), \
+             patch.object(bot, "_league_map", return_value={1: "premier league"}), \
+             patch.object(bot, "load_models", return_value={}), \
+             patch.object(bot, "get_team_shot_profile", return_value={}), \
+             patch.object(bot, "get_team_card_profile", return_value={}), \
+             patch.object(bot, "settle_pending") as settle, \
+             patch.object(bot, "record_predictions") as record, patch.object(bot, "build_reports") as reports, \
+             patch.object(bot, "_send_telegram") as send, \
+             patch.dict("os.environ", {"TELEGRAM_TOKEN": "test", "CHAT_ID": "test"}), \
+             contextlib.redirect_stdout(output):
+            bot.main()
+        settle.assert_not_called()
+        record.assert_not_called()
+        reports.assert_not_called()
+        send.assert_not_called()
+        self.assertIn("Aucune sélection : aucun enregistrement ni message Telegram envoyé", output.getvalue())
 
 
 if __name__ == "__main__":

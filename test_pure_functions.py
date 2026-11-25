@@ -96,6 +96,30 @@ class TrackingPureFunctionsTests(unittest.TestCase):
             self.assertEqual(row["actual_value"], 28.0)
             self.assertTrue(row["won"])
 
+    def test_settlement_skips_legacy_rows_without_sportapi_source(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            predictions = data_dir / "predictions.jsonl"
+            rows = [
+                {"source": "bzzoiro", "event_id": 101, "market": "total_tirs",
+                 "line": 26.5, "status": "pending"},
+                {"event_id": 102, "market": "total_tirs", "line": 26.5,
+                 "status": "pending"},
+            ]
+            predictions.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            with patch.object(tracking, "DATA_DIR", data_dir), patch.object(
+                tracking, "PREDICTIONS_FILE", predictions
+            ):
+                changed = tracking.settle_pending(
+                    lambda _: self.fail("Aucun appel Bzzoiro attendu"),
+                    lambda _: self.fail("Aucun appel SportAPI attendu pour une source inconnue"),
+                )
+            self.assertEqual(changed, 0)
+            self.assertEqual([json.loads(line) for line in predictions.read_text().splitlines()], rows)
+
     def test_reports_do_not_mix_provider_calibration(self):
         import json
         import tempfile

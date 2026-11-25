@@ -144,21 +144,15 @@ def _won(row, actuals):
 
 
 def settle_pending(getter, sportapi_getter=None):
-    """Règle chaque ligne avec son fournisseur d'origine; les anciennes lignes sont Bzzoiro."""
+    """Règle seulement les lignes explicitement attribuées à SportAPI."""
     rows = _read_jsonl(PREDICTIONS_FILE)
     changed = 0
     for row in rows:
         if row.get("status") != "pending":
             continue
-        source = row.get("source", "bzzoiro")
-        if source == "sportapi":
-            if not sportapi_getter:
-                continue
-            actuals = _sportapi_actuals(sportapi_getter, row.get("event_id"))
-        else:
-            if not getter:
-                continue
-            actuals = _actuals(getter, row.get("event_id"))
+        if row.get("source") != "sportapi" or not sportapi_getter:
+            continue
+        actuals = _sportapi_actuals(sportapi_getter, row.get("event_id"))
         actual, won = _won(row, actuals)
         if actual is None:
             continue
