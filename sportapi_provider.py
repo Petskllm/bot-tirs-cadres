@@ -9,21 +9,61 @@ import requests
 BASE_URL = "https://sportapi.ai/api"
 API_KEY = os.getenv("SPORTAPI_KEY", "").strip()
 PARIS = ZoneInfo("Europe/Paris")
+try:
+    REQUEST_LIMIT = max(0, int(os.getenv("SPORTAPI_MAX_REQUESTS", "0")))
+except ValueError:
+    REQUEST_LIMIT = 0
+REQUEST_COUNT = 0
+REQUEST_LIMIT_REACHED = False
+DAILY_REMAINING = None
 
 def sportapi_today():
     return datetime.now(PARIS).date().isoformat()
 
+def _remaining_daily(headers):
+    names = (
+        "x-ratelimit-remaining-daily", "x-ratelimit-remaining-day",
+        "x-rate-limit-remaining-daily", "x-rate-limit-remaining-day",
+        "ratelimit-remaining-daily", "rate-limit-remaining-daily",
+        "x-daily-remaining", "daily-remaining", "x-ratelimit-remaining",
+        "x-rate-limit-remaining", "ratelimit-remaining", "rate-limit-remaining",
+    )
+    lowered = {str(key).lower(): str(value).strip() for key, value in headers.items()}
+    for name in names:
+        if name in lowered:
+            try:
+                return max(0, int(float(lowered[name])))
+            except ValueError:
+                continue
+    return None
+
 def api_get(path, attempts=2):
     """Envoie uniquement des GET, avec auth dans l'en-tête et sans exposer la clé."""
+    global REQUEST_COUNT, REQUEST_LIMIT_REACHED, DAILY_REMAINING
     if not API_KEY:
         return None
     for attempt in range(attempts):
+        if REQUEST_LIMIT and REQUEST_COUNT >= REQUEST_LIMIT:
+            REQUEST_LIMIT_REACHED = True
+            return None
+        if DAILY_REMAINING is not None and DAILY_REMAINING <= 0:
+            REQUEST_LIMIT_REACHED = True
+            return None
         try:
+            REQUEST_COUNT += 1
             r = requests.get(f"{BASE_URL}/{path.lstrip('/')}",
                              headers={"X-Api-Key": API_KEY}, timeout=20)
+            remaining = _remaining_daily(r.headers)
+            if remaining is not None:
+                DAILY_REMAINING = remaining
+            elif DAILY_REMAINING is not None:
+                DAILY_REMAINING = max(0, DAILY_REMAINING - 1)
             if r.status_code == 200:
                 data = r.json()
                 return data if isinstance(data, dict) and data.get("success") else None
+            if r.status_code == 429 and REQUEST_LIMIT:
+                REQUEST_LIMIT_REACHED = True
+                break
             if r.status_code not in {429, 500, 502, 503, 504}:
                 break
         except (requests.RequestException, ValueError):
@@ -31,6 +71,10 @@ def api_get(path, attempts=2):
         if attempt + 1 < attempts:
             time.sleep(1.5)
     return None
+
+def request_usage():
+    return {"requests": REQUEST_COUNT, "limit": REQUEST_LIMIT or None,
+            "limit_reached": REQUEST_LIMIT_REACHED, "daily_remaining": DAILY_REMAINING}
 
 @lru_cache(maxsize=160)
 def fixtures_on_date(day):

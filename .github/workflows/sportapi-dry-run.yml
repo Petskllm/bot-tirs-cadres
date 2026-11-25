@@ -1,0 +1,35 @@
+name: SportAPI quota-capped dry-run
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sportapi-quota-capped-dry-run
+  cancel-in-progress: false
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+      - name: Configurer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Installer les dépendances
+        run: python -m pip install -r requirements.txt
+      - name: Vérifier les tests purs et le préflight
+        run: python -m unittest -v test_pure_functions.py test_bot_modes.py test_sportapi_bot.py test_sportapi_dry_run_preflight.py
+      - name: Contrôler le quota SportAPI avant le bot
+        env:
+          SPORTAPI_KEY: ${{ secrets.SPORTAPI_KEY }}
+        run: python sportapi_dry_run_preflight.py
+      - name: Exécuter le bot en dry-run borné
+        env:
+          SPORTAPI_KEY: ${{ secrets.SPORTAPI_KEY }}
+          DRY_RUN: "true"
+          TRACK_ONLY: "false"
+        run: |
+          test -n "$SPORTAPI_MAX_REQUESTS"
+          python bot_sportapi.py

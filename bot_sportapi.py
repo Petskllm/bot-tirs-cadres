@@ -6,7 +6,7 @@ from pathlib import Path
 import requests
 from bot_modes import should_persist_results, should_send_telegram
 from model_rules import select_team_sot
-from sportapi_provider import API_KEY, api_get, fixtures_on_date, get_team_card_profile, get_team_model_form, get_team_shot_profile, sportapi_today
+from sportapi_provider import API_KEY, api_get, fixtures_on_date, get_team_card_profile, get_team_model_form, get_team_shot_profile, request_usage, sportapi_today
 from tracking import build_reports, record_predictions, settle_pending
 
 DRY_RUN = os.getenv("DRY_RUN", "1").lower() in {"1", "true", "yes"}
@@ -128,6 +128,12 @@ def _league_map():
 def is_allowed_league(name):
     return " ".join(str(name or "").lower().split()) in ALLOWED_LEAGUES
 
+def _print_api_usage():
+    usage = request_usage()
+    limit_text = str(usage["limit"]) if usage["limit"] is not None else "aucun plafond configuré"
+    print(f"SportAPI GET utilisés: {usage['requests']} / {limit_text}; quota quotidien restant signalé: {usage['daily_remaining']}")
+    if usage["limit_reached"]:
+        print("ATTENTION: plafond atteint; cette sortie est partielle et ne doit pas être interprétée comme un résultat complet.")
 
 def _top_player_text(profile):
     rows = profile.get("top_card_players", [])
@@ -150,6 +156,7 @@ def main():
     matches = fixtures_on_date(today)
     if not matches:
         print(f"SportAPI n'a renvoyé aucun match pour le {today}; aucun pronostic généré.")
+        _print_api_usage()
         return
     leagues = _league_map()
     models = load_models()
@@ -265,6 +272,7 @@ def main():
     if not (picks_total or picks_sot or picks_cards):
         lines.append("Aucune sélection ne passe les filtres aujourd'hui.")
     message = "\n".join(lines)
+    _print_api_usage()
     if not should_persist_results(DRY_RUN, TRACK_ONLY):
         print("DRY_RUN actif : aucun message Telegram envoyé, aucune prédiction persistée.")
         print(message)
