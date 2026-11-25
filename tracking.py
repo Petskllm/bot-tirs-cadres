@@ -118,6 +118,12 @@ def _sportapi_actuals(getter, fixture_id):
     return values
 
 
+def _api_football_actuals(getter, fixture_id):
+    """Récupère les valeurs déjà normalisées par le fournisseur API-Football."""
+    values = getter(fixture_id) or {}
+    return values if isinstance(values, dict) else {}
+
+
 def _won(row, actuals):
     market = row.get("market")
     selection = str(row.get("selection", ""))
@@ -143,16 +149,20 @@ def _won(row, actuals):
     return actual, bool(won)
 
 
-def settle_pending(getter, sportapi_getter=None):
-    """Règle seulement les lignes explicitement attribuées à SportAPI."""
+def settle_pending(getter=None, sportapi_getter=None, api_football_getter=None):
+    """Règle les lignes uniquement avec leur fournisseur d'origine."""
     rows = _read_jsonl(PREDICTIONS_FILE)
     changed = 0
     for row in rows:
         if row.get("status") != "pending":
             continue
-        if row.get("source") != "sportapi" or not sportapi_getter:
+        source = row.get("source")
+        if source == "sportapi" and sportapi_getter:
+            actuals = _sportapi_actuals(sportapi_getter, row.get("event_id"))
+        elif source == "api_football" and api_football_getter:
+            actuals = _api_football_actuals(api_football_getter, row.get("event_id"))
+        else:
             continue
-        actuals = _sportapi_actuals(sportapi_getter, row.get("event_id"))
         actual, won = _won(row, actuals)
         if actual is None:
             continue

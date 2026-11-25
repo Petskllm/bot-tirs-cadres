@@ -7,6 +7,7 @@ import requests
 from bot_modes import should_persist_results, should_send_telegram
 from model_rules import select_team_sot
 from sportapi_provider import API_KEY, api_get, fixtures_on_date, get_team_card_profile, get_team_model_form, get_team_shot_profile, request_usage, sportapi_today
+import api_football_provider as api_football
 from tracking import build_reports, record_predictions, settle_pending
 
 DRY_RUN = os.getenv("DRY_RUN", "1").lower() in {"1", "true", "yes"}
@@ -143,23 +144,37 @@ def _top_player_text(profile):
 
 
 def main():
-    if not API_KEY:
+    use_api_football = os.getenv("API_FOOTBALL_FALLBACK", "0").lower() in {"1", "true", "yes"}
+    source = "api_football" if use_api_football else "sportapi"
+    if use_api_football and not api_football.API_KEY:
+        raise SystemExit("API_FOOTBALL_KEY absente : aucun appel effectué.")
+    if not use_api_football and not API_KEY:
         raise SystemExit("SPORTAPI_KEY absent : aucun appel effectué.")
     if not DRY_RUN and not TRACK_ONLY and not all((os.getenv("TELEGRAM_TOKEN"), os.getenv("CHAT_ID"))):
         raise SystemExit("Secrets Telegram manquants; aucun pronostic envoyé.")
     if TRACK_ONLY:
-        settled = settle_pending(None, api_get)
+        settled = settle_pending(
+            None,
+            sportapi_getter=None if use_api_football else api_get,
+            api_football_getter=api_football.actuals_for_fixture if use_api_football else None,
+        )
         print(f"Pronostics antérieurs réglés: {settled}")
         build_reports()
 
-    today = sportapi_today()
-    matches = fixtures_on_date(today)
+    today = api_football.today() if use_api_football else sportapi_today()
+    matches = api_football.fixtures_on_date(today) if use_api_football else fixtures_on_date(today)
     if not matches:
-        print(f"SportAPI n'a renvoyé aucun match pour le {today}; aucun pronostic généré.")
-        _print_api_usage()
+        provider_name = "API-Football" if use_api_football else "SportAPI"
+        print(f"{provider_name} n'a renvoyé aucun match pour le {today}; aucun pronostic généré.")
+        if use_api_football:
+            usage = api_football.request_usage()
+            print(f"API-Football GET utilisés: {usage['requests']} / {usage['limit']}; restant journalier signalé: {usage['daily_remaining']}")
+        else:
+            _print_api_usage()
         return
-    leagues = _league_map()
-    models = load_models()
+    leagues = {} if use_api_football else _league_map()
+    # Le modèle logistique est validé sur l'historique SportAPI uniquement.
+    models = {} if use_api_football else load_models()
     picks_total, picks_sot, picks_cards = [], [], []
     predictions = []
     analyzed = ignored = 0
@@ -169,7 +184,7 @@ def main():
         if str(match.get("status", "")).lower() != "scheduled":
             continue
         league_id = match.get("league_id")
-        league_name = leagues.get(league_id, " ".join(str(match.get("league_name", "")).lower().split()))
+        league_name = " ".join(str(match.get("league_name", "")).lower().split()) if use_api_football else leagues.get(league_id, " ".join(str(match.get("league_name", "")).lower().split()))
         league_code = TRAINED_LEAGUES.get(league_name)
         if not is_allowed_league(league_name):
             ignored += 1
@@ -180,11 +195,20 @@ def main():
         home_name, away_name = match.get("home_team", "Domicile"), match.get("away_team", "Extérieur")
         title = f"{home_name} — {away_name}"
         kickoff = match.get("kickoff_utc") or match.get("datetime") or match.get("date")
-        hp = get_team_shot_profile(home_id, "home", league_id, today)
-        ap = get_team_shot_profile(away_id, "away", league_id, today)
+        season = match.get("season")
+        if use_api_football:
+            hp = api_football.get_team_shot_profile(home_id, "home", league_id, today, season)
+            ap = api_football.get_team_shot_profile(away_id, "away", league_id, today, season)
+        else:
+            hp = get_team_shot_profile(home_id, "home", league_id, today)
+            ap = get_team_shot_profile(away_id, "away", league_id, today)
         use_candidate = bool(league_code and models)
-        home_form = get_team_model_form(home_id, "home", league_id, today) if use_candidate else {}
-        away_form = get_team_model_form(away_id, "away", league_id, today) if use_candidate else {}
+        if use_api_football:
+            home_form = api_football.get_team_model_form(home_id, "home", league_id, today, season)
+            away_form = api_football.get_team_model_form(away_id, "away", league_id, today, season)
+        else:
+            home_form = get_team_model_form(home_id, "home", league_id, today) if use_candidate else {}
+            away_form = get_team_model_form(away_id, "away", league_id, today) if use_candidate else {}
 
         h_shots, a_shots = hp.get("total_shots"), ap.get("total_shots")
         if h_shots and a_shots:
@@ -206,7 +230,7 @@ def main():
                 odds = round(1 / probability * 1.04, 2) if probability else None
                 if samples >= 6 and probability >= 0.65 and odds >= 1.28:
                     picks_total.append(f"⚽ {title}\n  Total attendu : {total:.1f}\n  • +27 tirs : {over:.0%} | -27 tirs : {under:.0%}\n  • Sélection : {label} tirs — {probability:.0%} (Cote estimée : {odds})")
-                    predictions.append({"event_id": fid, "source": "sportapi", "kickoff": kickoff,
+                    predictions.append({"event_id": fid, "source": source, "kickoff": kickoff,
                         "match": title, "market": "total_tirs", "selection": label, "line": 26.5,
                         "direction": "over" if label == "+27" else "under", "probability": probability,
                         "estimated_odds": odds, "samples": samples})
@@ -227,15 +251,19 @@ def main():
                 line, probability = selection
                 odds = round(1 / probability * 1.04, 2)
                 picks_sot.append(f"🎯 {title}\n  • {team_name} +{line} tirs cadrés : {probability:.0%} (Cote min : {odds})")
-                predictions.append({"event_id": fid, "source": "sportapi", "kickoff": kickoff,
+                predictions.append({"event_id": fid, "source": source, "kickoff": kickoff,
                     "match": title, "market": "tirs_cadres_equipe", "selection": f"{team_name} +{line}",
                     "line": line, "direction": "over", "probability": probability,
                     "estimated_odds": odds, "team_id": team_id, "side": side,
                     "samples": profile["samples"], "expected_mean": profile["average"],
                     "expected_variance": profile["variance"]})
 
-        hc = get_team_card_profile(home_id, "home", league_id, today)
-        ac = get_team_card_profile(away_id, "away", league_id, today)
+        if use_api_football:
+            hc = api_football.get_team_card_profile(home_id, "home", league_id, today, season)
+            ac = api_football.get_team_card_profile(away_id, "away", league_id, today, season)
+        else:
+            hc = get_team_card_profile(home_id, "home", league_id, today)
+            ac = get_team_card_profile(away_id, "away", league_id, today)
         hy, ay = hc.get("yellow_cards"), ac.get("yellow_cards")
         if hy and ay:
             total_cards = hy["average"] + ay["average"]
@@ -255,7 +283,7 @@ def main():
                     if offender_text:
                         context += f"\n  Joueurs souvent avertis (historique, présence non vérifiée) : {offender_text}"
                     picks_cards.append(f"🟨 {title}\n  Cartons jaunes attendus : {total_cards:.1f}{context}\n  • +4,5 cartons jaunes : {probability:.0%} (Cote estimée : {odds})")
-                    predictions.append({"event_id": fid, "source": "sportapi", "kickoff": kickoff,
+                    predictions.append({"event_id": fid, "source": source, "kickoff": kickoff,
                         "match": title, "market": "cartons", "selection": "+4,5 jaunes", "line": 4.5,
                         "direction": "over", "probability": probability, "estimated_odds": odds,
                         "samples": card_samples, "expected_mean": total_cards,
@@ -263,7 +291,8 @@ def main():
         if analyzed >= 14 or time.monotonic() - started > 280:
             break
 
-    lines = [f"PRONOSTICS SPORTAPI — {datetime.now().strftime('%d/%m/%Y')}",
+    provider_label = "API-FOOTBALL — SECOURS" if use_api_football else "SPORTAPI"
+    lines = [f"PRONOSTICS {provider_label} — {datetime.now().strftime('%d/%m/%Y')}",
              f"Matchs analysés: {analyzed} | autres ligues ignorées: {ignored}",
              "Marchés: tirs totaux, tirs cadrés par équipe, cartons jaunes.", ""]
     for heading, rows in (("TIRS TOTAUX", picks_total), ("TIRS CADRÉS ÉQUIPE", picks_sot), ("CARTONS", picks_cards)):
@@ -272,11 +301,16 @@ def main():
     if not (picks_total or picks_sot or picks_cards):
         lines.append("Aucune sélection ne passe les filtres aujourd'hui.")
     message = "\n".join(lines)
-    _print_api_usage()
-    usage = request_usage()
-    budget_exhausted = usage["limit_reached"] or (
-        usage["limit"] is not None and usage["requests"] >= usage["limit"]
-    )
+    if use_api_football:
+        usage = api_football.request_usage()
+        print(f"API-Football GET utilisés: {usage['requests']} / {usage['limit']}; restant journalier signalé: {usage['daily_remaining']}")
+        budget_exhausted = api_football.budget_exhausted() or usage["limit_reached"]
+    else:
+        _print_api_usage()
+        usage = request_usage()
+        budget_exhausted = usage["limit_reached"] or (
+            usage["limit"] is not None and usage["requests"] >= usage["limit"]
+        )
     if not DRY_RUN and budget_exhausted:
         print("Mode persistant/live annulé : budget de requêtes atteint; aucune prédiction enregistrée ni aucun message Telegram envoyé.")
         return
@@ -287,7 +321,8 @@ def main():
     if not DRY_RUN and not predictions:
         print("Aucune sélection : aucun enregistrement ni message Telegram envoyé.")
         return
-    added = record_predictions(predictions, MODEL_VERSION)
+    model_version = "v2.6-api-football-baseline" if use_api_football else MODEL_VERSION
+    added = record_predictions(predictions, model_version)
     report = build_reports()
     print(f"Nouvelles sélections enregistrées: {added}; pronostics réglés suivis: {report.get('settled_predictions', 0)}")
     if not should_send_telegram(DRY_RUN, TRACK_ONLY):
