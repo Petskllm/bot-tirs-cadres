@@ -1,0 +1,27 @@
+name: SportAPI.ai diagnostic (read-only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sportapi-readonly-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+      - name: Configurer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Tester la couverture SportAPI.ai
+        env:
+          SPORTAPI_KEY: ${{ secrets.SPORTAPI_KEY }}
+        run: python sportapi_diagnostic.py
