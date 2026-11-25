@@ -1,0 +1,496 @@
+{
+  "data": {
+    "seasons": [
+      "1718",
+      "1819",
+      "1920",
+      "2021",
+      "2122",
+      "2223",
+      "2324",
+      "2425"
+    ],
+    "leagues": [
+      "D1",
+      "E0",
+      "F1",
+      "I1",
+      "SP1"
+    ],
+    "matches": 14358,
+    "first_date": "2017-08-04",
+    "last_date": "2025-05-25"
+  },
+  "markets": {
+    "total_tirs": {
+      "test_seasons": [
+        "1819",
+        "1920",
+        "2021",
+        "2122",
+        "2223",
+        "2324",
+        "2425"
+      ],
+      "baseline_current_rule": {
+        "n": 11774,
+        "brier": 0.24524,
+        "log_loss": 0.69737,
+        "accuracy_50": 0.6082,
+        "over_picks_at_65": 1466,
+        "over_hit_rate_at_65": 0.47476,
+        "picks_at_65_both_sides": 6882,
+        "hit_rate_at_65_both_sides": 0.65315
+      },
+      "candidate_regularized_logistic": {
+        "n": 11774,
+        "brier": 0.21817,
+        "log_loss": 0.62653,
+        "accuracy_50": 0.65033,
+        "over_picks_at_65": 204,
+        "over_hit_rate_at_65": 0.64216,
+        "picks_at_65_both_sides": 6249,
+        "hit_rate_at_65_both_sides": 0.72492
+      },
+      "by_season": {
+        "1819": {
+          "baseline_current_rule": {
+            "n": 1653,
+            "brier": 0.23999,
+            "log_loss": 0.68614,
+            "accuracy_50": 0.62795,
+            "over_picks_at_65": 192,
+            "over_hit_rate_at_65": 0.46875
+          },
+          "candidate_regularized_logistic": {
+            "n": 1653,
+            "brier": 0.22169,
+            "log_loss": 0.63474,
+            "accuracy_50": 0.65033,
+            "over_picks_at_65": 16,
+            "over_hit_rate_at_65": 0.6875
+          }
+        },
+        "1920": {
+          "baseline_current_rule": {
+            "n": 1573,
+            "brier": 0.22322,
+            "log_loss": 0.64691,
+            "accuracy_50": 0.65416,
+            "over_picks_at_65": 156,
+            "over_hit_rate_at_65": 0.44872
+          },
+          "candidate_regularized_logistic": {
+            "n": 1573,
+            "brier": 0.19559,
+            "log_loss": 0.57575,
+            "accuracy_50": 0.69739,
+            "over_picks_at_65": 43,
+            "over_hit_rate_at_65": 0.69767
+          }
+        },
+        "2021": {
+          "baseline_current_rule": {
+            "n": 1614,
+            "brier": 0.21881,
+            "log_loss": 0.63907,
+            "accuracy_50": 0.66543,
+            "over_picks_at_65": 108,
+            "over_hit_rate_at_65": 0.39815
+          },
+          "candidate_regularized_logistic": {
+            "n": 1614,
+            "brier": 0.19189,
+            "log_loss": 0.57027,
+            "accuracy_50": 0.71747,
+            "over_picks_at_65": 3,
+            "over_hit_rate_at_65": 0.66667
+          }
+        },
+        "2122": {
+          "baseline_current_rule": {
+            "n": 1758,
+            "brier": 0.25493,
+            "log_loss": 0.72143,
+            "accuracy_50": 0.58589,
+            "over_picks_at_65": 208,
+            "over_hit_rate_at_65": 0.51923
+          },
+          "candidate_regularized_logistic": {
+            "n": 1758,
+            "brier": 0.22792,
+            "log_loss": 0.64888,
+            "accuracy_50": 0.63367,
+            "over_picks_at_65": 15,
+            "over_hit_rate_at_65": 0.53333
+          }
+        },
+        "2223": {
+          "baseline_current_rule": {
+            "n": 1769,
+            "brier": 0.2585,
+            "log_loss": 0.72758,
+            "accuracy_50": 0.58112,
+            "over_picks_at_65": 228,
+            "over_hit_rate_at_65": 0.44298
+          },
+          "candidate_regularized_logistic": {
+            "n": 1769,
+            "brier": 0.2292,
+            "log_loss": 0.65054,
+            "accuracy_50": 0.62012,
+            "over_picks_at_65": 25,
+            "over_hit_rate_at_65": 0.56
+          }
+        },
+        "2324": {
+          "baseline_current_rule": {
+            "n": 1720,
+            "brier": 0.25902,
+            "log_loss": 0.72318,
+            "accuracy_50": 0.56977,
+            "over_picks_at_65": 309,
+            "over_hit_rate_at_65": 0.54369
+          },
+          "candidate_regularized_logistic": {
+            "n": 1720,
+            "brier": 0.2332,
+            "log_loss": 0.6585,
+            "accuracy_50": 0.60174,
+            "over_picks_at_65": 66,
+            "over_hit_rate_at_65": 0.62121
+          }
+        },
+        "2425": {
+          "baseline_current_rule": {
+            "n": 1687,
+            "brier": 0.25817,
+            "log_loss": 0.72817,
+            "accuracy_50": 0.5821,
+            "over_picks_at_65": 265,
+            "over_hit_rate_at_65": 0.43774
+          },
+          "candidate_regularized_logistic": {
+            "n": 1687,
+            "brier": 0.22385,
+            "log_loss": 0.6386,
+            "accuracy_50": 0.64078,
+            "over_picks_at_65": 36,
+            "over_hit_rate_at_65": 0.69444
+          }
+        }
+      }
+    },
+    "tirs_cadres_equipe": {
+      "test_seasons": [
+        "1819",
+        "1920",
+        "2021",
+        "2122",
+        "2223",
+        "2324",
+        "2425"
+      ],
+      "baseline_current_rule": {
+        "n": 24962,
+        "brier": 0.23187,
+        "log_loss": 0.65866,
+        "accuracy_50": 0.61938,
+        "over_picks_at_65": 11789,
+        "over_hit_rate_at_65": 0.6993
+      },
+      "candidate_regularized_logistic": {
+        "n": 24962,
+        "brier": 0.21563,
+        "log_loss": 0.61938,
+        "accuracy_50": 0.65035,
+        "over_picks_at_65": 9729,
+        "over_hit_rate_at_65": 0.75866
+      },
+      "by_season": {
+        "1819": {
+          "baseline_current_rule": {
+            "n": 3626,
+            "brier": 0.22346,
+            "log_loss": 0.63869,
+            "accuracy_50": 0.63238,
+            "over_picks_at_65": 1828,
+            "over_hit_rate_at_65": 0.72374
+          },
+          "candidate_regularized_logistic": {
+            "n": 3626,
+            "brier": 0.21601,
+            "log_loss": 0.62023,
+            "accuracy_50": 0.65306,
+            "over_picks_at_65": 1199,
+            "over_hit_rate_at_65": 0.77898
+          }
+        },
+        "1920": {
+          "baseline_current_rule": {
+            "n": 3428,
+            "brier": 0.22804,
+            "log_loss": 0.64879,
+            "accuracy_50": 0.6266,
+            "over_picks_at_65": 1724,
+            "over_hit_rate_at_65": 0.71056
+          },
+          "candidate_regularized_logistic": {
+            "n": 3428,
+            "brier": 0.21007,
+            "log_loss": 0.60637,
+            "accuracy_50": 0.66453,
+            "over_picks_at_65": 1442,
+            "over_hit_rate_at_65": 0.77254
+          }
+        },
+        "2021": {
+          "baseline_current_rule": {
+            "n": 3638,
+            "brier": 0.23052,
+            "log_loss": 0.65473,
+            "accuracy_50": 0.61435,
+            "over_picks_at_65": 1609,
+            "over_hit_rate_at_65": 0.70354
+          },
+          "candidate_regularized_logistic": {
+            "n": 3638,
+            "brier": 0.21397,
+            "log_loss": 0.61519,
+            "accuracy_50": 0.64706,
+            "over_picks_at_65": 1389,
+            "over_hit_rate_at_65": 0.76674
+          }
+        },
+        "2122": {
+          "baseline_current_rule": {
+            "n": 3640,
+            "brier": 0.24417,
+            "log_loss": 0.68713,
+            "accuracy_50": 0.60137,
+            "over_picks_at_65": 1587,
+            "over_hit_rate_at_65": 0.66604
+          },
+          "candidate_regularized_logistic": {
+            "n": 3640,
+            "brier": 0.22453,
+            "log_loss": 0.6407,
+            "accuracy_50": 0.63434,
+            "over_picks_at_65": 1416,
+            "over_hit_rate_at_65": 0.72034
+          }
+        },
+        "2223": {
+          "baseline_current_rule": {
+            "n": 3640,
+            "brier": 0.23655,
+            "log_loss": 0.67136,
+            "accuracy_50": 0.60989,
+            "over_picks_at_65": 1665,
+            "over_hit_rate_at_65": 0.67988
+          },
+          "candidate_regularized_logistic": {
+            "n": 3640,
+            "brier": 0.21748,
+            "log_loss": 0.62414,
+            "accuracy_50": 0.65357,
+            "over_picks_at_65": 1429,
+            "over_hit_rate_at_65": 0.74668
+          }
+        },
+        "2324": {
+          "baseline_current_rule": {
+            "n": 3496,
+            "brier": 0.22814,
+            "log_loss": 0.64985,
+            "accuracy_50": 0.62672,
+            "over_picks_at_65": 1744,
+            "over_hit_rate_at_65": 0.71273
+          },
+          "candidate_regularized_logistic": {
+            "n": 3496,
+            "brier": 0.21208,
+            "log_loss": 0.61016,
+            "accuracy_50": 0.65189,
+            "over_picks_at_65": 1461,
+            "over_hit_rate_at_65": 0.76934
+          }
+        },
+        "2425": {
+          "baseline_current_rule": {
+            "n": 3494,
+            "brier": 0.2318,
+            "log_loss": 0.6591,
+            "accuracy_50": 0.62536,
+            "over_picks_at_65": 1632,
+            "over_hit_rate_at_65": 0.69363
+          },
+          "candidate_regularized_logistic": {
+            "n": 3494,
+            "brier": 0.21477,
+            "log_loss": 0.61766,
+            "accuracy_50": 0.64883,
+            "over_picks_at_65": 1393,
+            "over_hit_rate_at_65": 0.75879
+          }
+        }
+      }
+    },
+    "cartons": {
+      "test_seasons": [
+        "1819",
+        "1920",
+        "2021",
+        "2122",
+        "2223",
+        "2324",
+        "2425"
+      ],
+      "baseline_current_rule": {
+        "n": 12229,
+        "brier": 0.24443,
+        "log_loss": 0.69616,
+        "accuracy_50": 0.59637,
+        "over_picks_at_65": 1621,
+        "over_hit_rate_at_65": 0.5694
+      },
+      "candidate_regularized_logistic": {
+        "n": 12229,
+        "brier": 0.22763,
+        "log_loss": 0.64724,
+        "accuracy_50": 0.63145,
+        "over_picks_at_65": 210,
+        "over_hit_rate_at_65": 0.7381
+      },
+      "by_season": {
+        "1819": {
+          "baseline_current_rule": {
+            "n": 1750,
+            "brier": 0.23928,
+            "log_loss": 0.69207,
+            "accuracy_50": 0.628,
+            "over_picks_at_65": 246,
+            "over_hit_rate_at_65": 0.55691
+          },
+          "candidate_regularized_logistic": {
+            "n": 1750,
+            "brier": 0.21977,
+            "log_loss": 0.63177,
+            "accuracy_50": 0.66114,
+            "over_picks_at_65": 33,
+            "over_hit_rate_at_65": 0.60606
+          }
+        },
+        "1920": {
+          "baseline_current_rule": {
+            "n": 1659,
+            "brier": 0.24331,
+            "log_loss": 0.69354,
+            "accuracy_50": 0.60277,
+            "over_picks_at_65": 319,
+            "over_hit_rate_at_65": 0.63636
+          },
+          "candidate_regularized_logistic": {
+            "n": 1659,
+            "brier": 0.22682,
+            "log_loss": 0.64601,
+            "accuracy_50": 0.64014,
+            "over_picks_at_65": 56,
+            "over_hit_rate_at_65": 0.82143
+          }
+        },
+        "2021": {
+          "baseline_current_rule": {
+            "n": 1785,
+            "brier": 0.23392,
+            "log_loss": 0.67281,
+            "accuracy_50": 0.61569,
+            "over_picks_at_65": 148,
+            "over_hit_rate_at_65": 0.5473
+          },
+          "candidate_regularized_logistic": {
+            "n": 1785,
+            "brier": 0.21643,
+            "log_loss": 0.62169,
+            "accuracy_50": 0.64034,
+            "over_picks_at_65": 26,
+            "over_hit_rate_at_65": 0.80769
+          }
+        },
+        "2122": {
+          "baseline_current_rule": {
+            "n": 1790,
+            "brier": 0.24108,
+            "log_loss": 0.68616,
+            "accuracy_50": 0.58939,
+            "over_picks_at_65": 274,
+            "over_hit_rate_at_65": 0.58029
+          },
+          "candidate_regularized_logistic": {
+            "n": 1790,
+            "brier": 0.22758,
+            "log_loss": 0.64731,
+            "accuracy_50": 0.63743,
+            "over_picks_at_65": 40,
+            "over_hit_rate_at_65": 0.725
+          }
+        },
+        "2223": {
+          "baseline_current_rule": {
+            "n": 1790,
+            "brier": 0.24879,
+            "log_loss": 0.71145,
+            "accuracy_50": 0.60168,
+            "over_picks_at_65": 222,
+            "over_hit_rate_at_65": 0.56306
+          },
+          "candidate_regularized_logistic": {
+            "n": 1790,
+            "brier": 0.22933,
+            "log_loss": 0.65051,
+            "accuracy_50": 0.61955,
+            "over_picks_at_65": 24,
+            "over_hit_rate_at_65": 0.70833
+          }
+        },
+        "2324": {
+          "baseline_current_rule": {
+            "n": 1728,
+            "brier": 0.25317,
+            "log_loss": 0.70741,
+            "accuracy_50": 0.55498,
+            "over_picks_at_65": 243,
+            "over_hit_rate_at_65": 0.57202
+          },
+          "candidate_regularized_logistic": {
+            "n": 1728,
+            "brier": 0.24297,
+            "log_loss": 0.67999,
+            "accuracy_50": 0.58681,
+            "over_picks_at_65": 18,
+            "over_hit_rate_at_65": 0.66667
+          }
+        },
+        "2425": {
+          "baseline_current_rule": {
+            "n": 1727,
+            "brier": 0.25178,
+            "log_loss": 0.71019,
+            "accuracy_50": 0.58135,
+            "over_picks_at_65": 169,
+            "over_hit_rate_at_65": 0.46746
+          },
+          "candidate_regularized_logistic": {
+            "n": 1727,
+            "brier": 0.23091,
+            "log_loss": 0.6543,
+            "accuracy_50": 0.63463,
+            "over_picks_at_65": 13,
+            "over_hit_rate_at_65": 0.76923
+          }
+        }
+      }
+    }
+  },
+  "note": "Brier et log-loss évaluent les probabilités hors échantillon. Pas de ROI calculé: le CSV ne fournit pas les cotes des marchés tirs/cartons."
+}

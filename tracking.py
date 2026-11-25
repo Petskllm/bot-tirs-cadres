@@ -49,7 +49,7 @@ def _write_json(path, value):
 def _prediction_key(row):
     return "|".join(
         str(row.get(field, ""))
-        for field in ("event_id", "market", "selection", "team_id", "player_id", "model_version")
+        for field in ("source", "event_id", "market", "selection", "team_id", "player_id", "model_version")
     )
 
 
@@ -103,6 +103,21 @@ def _actuals(getter, event_id):
     return values
 
 
+def _sportapi_actuals(getter, fixture_id):
+    """Lit uniquement les champs documentés de stats équipe SportAPI."""
+    payload = getter(f"fixtures/{fixture_id}/stats") or {}
+    sides = payload.get("data", {}) if isinstance(payload, dict) else {}
+    home, away = sides.get("home", {}), sides.get("away", {})
+    values = {}
+    for name, key in (("total_tirs", "shots"), ("cartons", "yellow_cards")):
+        home_value, away_value = _number(home.get(key)), _number(away.get(key))
+        if home_value is not None and away_value is not None:
+            values[name] = home_value + away_value
+    values["home_sot"] = _number(home.get("shots_on_target"))
+    values["away_sot"] = _number(away.get("shots_on_target"))
+    return values
+
+
 def _won(row, actuals):
     market = row.get("market")
     selection = str(row.get("selection", ""))
@@ -128,14 +143,22 @@ def _won(row, actuals):
     return actual, bool(won)
 
 
-def settle_pending(getter):
-    """Règle les pronostics terminés; renvoie le nombre de lignes mises à jour."""
+def settle_pending(getter, sportapi_getter=None):
+    """Règle chaque ligne avec son fournisseur d'origine; les anciennes lignes sont Bzzoiro."""
     rows = _read_jsonl(PREDICTIONS_FILE)
     changed = 0
     for row in rows:
         if row.get("status") != "pending":
             continue
-        actuals = _actuals(getter, row.get("event_id"))
+        source = row.get("source", "bzzoiro")
+        if source == "sportapi":
+            if not sportapi_getter:
+                continue
+            actuals = _sportapi_actuals(sportapi_getter, row.get("event_id"))
+        else:
+            if not getter:
+                continue
+            actuals = _actuals(getter, row.get("event_id"))
         actual, won = _won(row, actuals)
         if actual is None:
             continue
@@ -168,8 +191,9 @@ def build_reports():
             won = 1 if row["won"] else 0
         except (KeyError, TypeError, ValueError):
             continue
-        market_groups[row.get("market", "unknown")].append((probability, won))
-        buckets[(row.get("market", "unknown"), _bucket(probability))].append((probability, won))
+        provider_market = f"{row.get('source', 'bzzoiro')}:{row.get('market', 'unknown')}"
+        market_groups[provider_market].append((probability, won))
+        buckets[(provider_market, _bucket(probability))].append((probability, won))
 
     report = {"generated_at": now_iso(), "settled_predictions": len(rows), "markets": {}}
     for market, values in sorted(market_groups.items()):

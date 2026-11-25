@@ -5,6 +5,9 @@ from unittest.mock import patch
 import api_football_validation as api_validation
 from api_only_stats import extract
 import backtest_bzzoiro as backtest
+import tracking
+import bot_sportapi
+import sportapi_provider as sportapi
 from model_rules import is_attacking_player, select_player_sot, select_team_sot
 from tracking import _bucket, _number, _prediction_key, _won
 
@@ -44,6 +47,74 @@ class TrackingPureFunctionsTests(unittest.TestCase):
         new = _prediction_key({**base, "model_version": "v2.5"})
 
         self.assertNotEqual(old, new)
+
+    def test_prediction_key_separates_provider_ids(self):
+        base = {"event_id": 42, "market": "total_tirs", "selection": "+27"}
+        old = _prediction_key({**base, "source": "bzzoiro"})
+        new = _prediction_key({**base, "source": "sportapi"})
+        self.assertNotEqual(old, new)
+
+    def test_sportapi_actuals_use_documented_team_fields_only(self):
+        payload = {"data": {
+            "home": {"shots": 13, "shots_on_target": 6, "yellow_cards": 1},
+            "away": {"shots": 11, "shots_on_target": 5, "yellow_cards": 2},
+        }}
+        actuals = tracking._sportapi_actuals(lambda _: payload, 99)
+        self.assertEqual(actuals, {
+            "total_tirs": 24.0, "cartons": 3.0,
+            "home_sot": 6.0, "away_sot": 5.0,
+        })
+        self.assertNotIn("corners", actuals)
+        self.assertNotIn("players", actuals)
+
+    def test_sportapi_settlement_does_not_call_bzzoiro(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            predictions = data_dir / "predictions.jsonl"
+            predictions.write_text(json.dumps({
+                "source": "sportapi", "event_id": 101, "market": "total_tirs",
+                "selection": "+27", "line": 26.5, "direction": "over", "status": "pending",
+            }) + "\n", encoding="utf-8")
+            payload = {"data": {
+                "home": {"shots": 15, "shots_on_target": 5, "yellow_cards": 1},
+                "away": {"shots": 13, "shots_on_target": 4, "yellow_cards": 2},
+            }}
+            calls = []
+            with patch.object(tracking, "DATA_DIR", data_dir), patch.object(
+                tracking, "PREDICTIONS_FILE", predictions
+            ):
+                changed = tracking.settle_pending(
+                    lambda _: self.fail("Bzzoiro ne doit pas être appelé"),
+                    lambda endpoint: calls.append(endpoint) or payload,
+                )
+            row = json.loads(predictions.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(changed, 1)
+            self.assertEqual(calls, ["fixtures/101/stats"])
+            self.assertEqual(row["actual_value"], 28.0)
+            self.assertTrue(row["won"])
+
+    def test_reports_do_not_mix_provider_calibration(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            predictions = data_dir / "predictions.jsonl"
+            rows = [
+                {"source": provider, "market": "total_tirs", "probability": 0.7,
+                 "won": True, "status": "settled"}
+                for provider in ("bzzoiro", "sportapi")
+            ]
+            predictions.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            with patch.object(tracking, "DATA_DIR", data_dir), \
+                 patch.object(tracking, "PREDICTIONS_FILE", predictions), \
+                 patch.object(tracking, "REPORT_FILE", data_dir / "report.json"), \
+                 patch.object(tracking, "CALIBRATION_FILE", data_dir / "calibration.json"):
+                report = tracking.build_reports()
+            self.assertEqual(set(report["markets"]), {"bzzoiro:total_tirs", "sportapi:total_tirs"})
 
 
 class ShotOnTargetModelRulesTests(unittest.TestCase):
@@ -175,6 +246,74 @@ class ApiFootballDiagnosticTests(unittest.TestCase):
         self.assertEqual(fixture_result["error"], "RuntimeError")
         self.assertIn("quota error echoed [REDACTED]", fixture_result["message"])
         self.assertNotIn(secret, repr(result))
+
+
+class SportAPIProviderTests(unittest.TestCase):
+    def test_team_profiles_read_only_documented_fields(self):
+        fixture = {"id": 12, "home_id": 7, "away_id": 9, "league_id": 4}
+        stats = {
+            "home": {"shots": 14, "shots_on_target": 6, "fouls": 16, "yellow_cards": 3},
+            "away": {"shots": 8, "shots_on_target": 2, "fouls": 10, "yellow_cards": 1},
+        }
+        events = [
+            {"event_type": "yellow_card", "team_side": "home", "player_name": "Player A"},
+            {"event_type": "yellow_card", "team_side": "away", "player_name": "Player B"},
+        ]
+        with patch.object(sportapi, "_prior_fixtures", return_value=[fixture]), patch.object(
+            sportapi, "fixture_stats", return_value=stats
+        ), patch.object(sportapi, "fixture_events", return_value=events):
+            shot = sportapi.get_team_shot_profile.__wrapped__(7, "home", 4, "2026-11-26")
+            cards = sportapi.get_team_card_profile.__wrapped__(7, "home", 4, "2026-11-26")
+        self.assertEqual(shot["total_shots"]["average"], 14)
+        self.assertEqual(shot["shots_on_target"]["average"], 6)
+        self.assertEqual(cards["yellow_cards"]["average"], 3)
+        self.assertEqual(cards["fouls"]["average"], 16)
+        self.assertEqual(cards["top_card_players"], [("Player A", 1)])
+
+    def test_model_form_exposes_weighted_5_and_10_match_features(self):
+        fixtures = [
+            {"id": 12, "home_id": 7, "away_id": 9},
+            {"id": 11, "home_id": 8, "away_id": 7},
+        ]
+        stats = {
+            12: {"home": {"shots": 14, "shots_on_target": 6, "fouls": 16, "yellow_cards": 3},
+                 "away": {"shots": 8, "shots_on_target": 2, "fouls": 10, "yellow_cards": 1}},
+            11: {"home": {"shots": 10, "shots_on_target": 4, "fouls": 12, "yellow_cards": 2},
+                 "away": {"shots": 7, "shots_on_target": 3, "fouls": 9, "yellow_cards": 1}},
+        }
+        with patch.object(sportapi, "_prior_fixtures", return_value=fixtures), patch.object(
+            sportapi, "fixture_stats", side_effect=lambda fid: stats[fid]
+        ):
+            result = sportapi.get_team_model_form.__wrapped__(7, "home", 4, "2026-11-26")
+        self.assertAlmostEqual(result["shots_for_5"], (14 * 2.96 + 7 * 0.962) / (2.96 + 0.962))
+        self.assertEqual(result["shots_for_10"], result["shots_for_5"])
+        self.assertAlmostEqual(result["shots_against_5"], (8 * 2.96 + 10 * 0.962) / (2.96 + 0.962))
+        self.assertIn("yellow_for_10", result)
+        self.assertIn("fouls_against_5", result)
+
+
+class SportAPIModelInferenceTests(unittest.TestCase):
+    def test_exported_logistic_inference_uses_scaled_features_and_missing_indicators(self):
+        model = {"features": ["a", "b"], "medians": [5.0, 10.0],
+                 "indicator_indices": [1], "scaler_mean": [0.0, 0.0, 0.0],
+                 "scaler_scale": [1.0, 1.0, 1.0], "coefficients": [0.0, 0.0, 2.0],
+                 "intercept": 0.0}
+        probability = bot_sportapi.model_probability(model, {"a": 2.0, "b": None})
+        self.assertAlmostEqual(probability, 1 / (1 + __import__("math").exp(-2)))
+
+    def test_uncovered_competitions_get_only_supported_league_flags(self):
+        flags = bot_sportapi._league_features("F1")
+        self.assertEqual(flags["league_F1"], 1.0)
+        self.assertEqual(sum(flags.values()), 1.0)
+
+    def test_allowed_competitions_prioritize_major_leagues_and_uefa_cups(self):
+        for name in ("Premier League", "UEFA Champions League", "Europa League",
+                     "UEFA Conference League", "Ligue 1"):
+            with self.subTest(name=name):
+                self.assertTrue(bot_sportapi.is_allowed_league(name))
+        for name in ("Eredivisie", "Primeira Liga", "Championship", "Ligue 2", "Serie B"):
+            with self.subTest(name=name):
+                self.assertFalse(bot_sportapi.is_allowed_league(name))
 
 
 if __name__ == "__main__":
