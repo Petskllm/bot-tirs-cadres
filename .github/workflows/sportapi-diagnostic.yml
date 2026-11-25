@@ -1,4 +1,4 @@
-name: SportAPI.ai diagnostic (read-only)
+name: SportAPI.ai 30-day audit (read-only)
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Tester la couverture SportAPI.ai
+      - name: Analyser la couverture SportAPI.ai sur 30 jours
         env:
           SPORTAPI_KEY: ${{ secrets.SPORTAPI_KEY }}
-        run: python sportapi_diagnostic.py
+        run: python sportapi_30day_audit.py
