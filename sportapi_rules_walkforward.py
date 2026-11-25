@@ -350,6 +350,7 @@ def main() -> int:
             "Les probabilités et taux sont conditionnels aux signaux effectivement émis par les règles; ils ne prouvent pas une rentabilité.",
             "Aucune cote historique de marché n’est collectée; pas de ROI vérifiable.",
             "Une seule période récente de 27 jours est évaluée; ce n’est pas une validation multi-saison.",
+            "Le quota journalier est vérifié avant la collecte; le quota mensuel est vérifié si son en-tête est fourni, et HTTP 429 arrête immédiatement le run.",
             "Les statistiques sont téléchargées en mémoire puis abandonnées; seuls les agrégats sont enregistrés.",
         ],
     }
@@ -360,15 +361,17 @@ def main() -> int:
         if args.test_days + args.lookback_days > 150:
             raise StopRun("window_too_large", "La fenêtre demandée dépasse la limite de sécurité de 150 jours.")
 
-        # Préflight obligatoire: l’exécution ne démarre que si les deux quotas
-        # confirment qu’un run complet de taille maximale est possible.
+        # Préflight obligatoire: le solde journalier doit couvrir le plafond
+        # complet. Vérifier aussi le mensuel si SportAPI expose cet en-tête.
         league_payload = client.get("leagues")
         report["requests"]["provider_daily_remaining_last_seen"] = client.daily_remaining
         report["requests"]["provider_monthly_remaining_last_seen"] = client.monthly_remaining
-        if client.daily_remaining is None or client.monthly_remaining is None:
-            raise StopRun("quota_headers_missing", "Les en-têtes de quota nécessaires sont absents; arrêt après le préflight.")
-        if min(client.daily_remaining, client.monthly_remaining) < args.minimum_reset_quota:
-            raise StopRun("quota_below_safe_minimum", "Le quota disponible après préflight est inférieur au minimum de sécurité.")
+        if client.daily_remaining is None:
+            raise StopRun("daily_quota_header_missing", "L’en-tête journalier X-RateLimit-Remaining est absent; arrêt après le préflight.")
+        if client.daily_remaining < args.minimum_reset_quota:
+            raise StopRun("daily_quota_below_safe_minimum", f"Il ne reste que {client.daily_remaining} requêtes journalières; minimum requis après préflight : {args.minimum_reset_quota}.")
+        if client.monthly_remaining is not None and client.monthly_remaining < args.minimum_reset_quota:
+            raise StopRun("monthly_quota_below_safe_minimum", f"Le quota mensuel restant ({client.monthly_remaining}) est inférieur au minimum de sécurité.")
 
         league_rows = response_rows(league_payload)
         league_names = {
