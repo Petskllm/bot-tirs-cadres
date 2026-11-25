@@ -34,13 +34,13 @@ def remaining_from_headers(headers, names):
 
 
 def choose_budget(daily_remaining, monthly_remaining=None):
-    """Gardes 20 requêtes de marge; plafonne le bot à 100 GET."""
+    """Garde 20 requêtes de marge; plafond dur du bot: 100 GET."""
     if daily_remaining is None:
         raise ValueError("SportAPI n'a pas fourni d'en-tête de quota journalier; arrêt par sécurité.")
-    if daily_remaining < 120:
-        raise ValueError(f"Quota journalier restant insuffisant ({daily_remaining}); minimum requis: 120.")
-    if monthly_remaining is not None and monthly_remaining < 120:
-        raise ValueError(f"Quota mensuel restant insuffisant ({monthly_remaining}); minimum requis: 120.")
+    if daily_remaining < 40:
+        raise ValueError(f"Quota journalier restant insuffisant ({daily_remaining}); minimum requis pour réserver 20 GET et lancer un dry-run: 40.")
+    if monthly_remaining is not None and monthly_remaining < 40:
+        raise ValueError(f"Quota mensuel restant insuffisant ({monthly_remaining}); minimum requis pour réserver 20 GET et lancer un dry-run: 40.")
     return min(100, daily_remaining - 20)
 
 
