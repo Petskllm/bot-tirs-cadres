@@ -22,6 +22,9 @@ ALLOWED_LEAGUES = {
     "europa league", "uefa europa league",
     "conference league", "uefa conference league", "europa conference league",
     "uefa europa conference league",
+    "eredivisie", "dutch eredivisie",
+    "championship", "efl championship", "english championship",
+    "süper lig", "super lig", "turkish süper lig", "turkish super lig",
 }
 
 
