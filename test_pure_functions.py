@@ -297,6 +297,13 @@ class ShotOnTargetModelRulesTests(unittest.TestCase):
 
 
 class BacktestProfileTests(unittest.TestCase):
+    def test_last_official_starters_handles_null_lineup_payload(self):
+        events = [{"id": "event-without-lineups", "home_team_id": 7}]
+        with patch.object(backtest, "prior_events", return_value=events), patch.object(
+            backtest, "cached_get", return_value={"lineups": None}
+        ):
+            self.assertEqual(backtest.last_official_starters(7, None), set())
+
     def test_team_profile_skips_events_with_stats_explicitly_unavailable(self):
         events = [
             {"id": "unavailable", "home_team_id": 7},

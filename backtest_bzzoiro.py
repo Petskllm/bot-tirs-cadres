@@ -233,9 +233,13 @@ def last_official_starters(team_id, kickoff):
     """Proxy historique connu avant le coup d'envoi; la production exige la lineup du jour."""
     for event in prior_events(team_id, kickoff, days=120)[:10]:
         lineups = cached_get(f"events/{event['id']}/lineups/") or {}
-        payload = lineups.get("lineups", lineups) if isinstance(lineups, dict) else {}
+        nested_payload = lineups.get("lineups") if isinstance(lineups, dict) else None
+        payload = nested_payload if isinstance(nested_payload, dict) else lineups
+        if not isinstance(payload, dict):
+            payload = {}
         side = "home" if str(event.get("home_team_id")) == str(team_id) else "away"
-        players = payload.get(side, {}).get("players", [])
+        side_payload = payload.get(side)
+        players = side_payload.get("players", []) if isinstance(side_payload, dict) else []
         starters = {
             str(player.get("id", player.get("player_id")))
             for player in players
