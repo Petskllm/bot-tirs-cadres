@@ -1,6 +1,5 @@
 import os
 import requests
-import math
 import time
 from functools import lru_cache
 from datetime import datetime, timedelta, timezone
@@ -8,17 +7,18 @@ from tracking import build_reports, record_predictions, settle_pending
 from api_football_validation import diagnose_api_football, format_report, validate_matches
 from bot_modes import should_persist_results, should_send_telegram
 from model_rules import is_attacking_player, normalized_player_position, select_player_sot, select_team_sot
+from probability import line_probabilities
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BZZOIRO_TOKEN")
 TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT = os.getenv("CHAT_ID")
-DRY_RUN = os.getenv("DRY_RUN", "0").lower() in {"1", "true", "yes"}
+DRY_RUN = os.getenv("DRY_RUN", "1").lower() in {"1", "true", "yes"}
 TRACK_ONLY = os.getenv("TRACK_ONLY", "0").lower() in {"1", "true", "yes"}
 API_FOOTBALL_DIAGNOSTIC = os.getenv("API_FOOTBALL_DIAGNOSTIC", "0").lower() in {"1", "true", "yes"}
 BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
-MODEL_VERSION = "v2.4-thresholds-65-lineups"
+MODEL_VERSION = "v2.5-negative-binomial"
 
 # Marché prioritaire : +4,5 cartons. Le seuil de probabilité reste le filtre
 # principal, mais on exige un historique minimum pour éviter les belles cotes
@@ -76,14 +76,6 @@ def get_daily_events(today, attempts=3):
         if attempt < attempts:
             time.sleep(2)
     return None, last_error or "réponse vide"
-
-def poisson_plus_de(lam, k):
-    if lam <= 0:
-        return 0.0
-    p = 0
-    for i in range(int(k) + 1):
-        p += math.exp(-lam) * (lam ** i) / math.factorial(i)
-    return 1 - p
 
 def send_telegram(msg):
     for i in range(0, len(msg), 4000):
@@ -232,24 +224,6 @@ def get_team_shot_profile(team_id, preferred_side, league_id=None):
                 "samples": min(item["samples"] for item in components),
             }
     return profile
-
-
-def line_probabilities(mean, variance, line, samples):
-    """Probabilités over/under avec Poisson de secours ou approximation normale.
-
-    Pour au moins cinq observations, la dispersion historique est utilisée.
-    La variance ne descend jamais sous la moyenne, qui est le plancher de la
-    loi de Poisson pour un comptage.
-    """
-    if mean <= 0:
-        return 0.0, 1.0
-    if samples < 5:
-        over = poisson_plus_de(mean, line)
-        return over, 1 - over
-    standard_deviation = math.sqrt(max(mean, variance, 1.0))
-    z = (line - mean) / standard_deviation
-    under = 0.5 * (1 + math.erf(z / math.sqrt(2)))
-    return 1 - under, under
 
 
 def _attacking_absences(payload, side):
@@ -497,7 +471,8 @@ def get_players_sot_history(team_id, league_id=None):
         if len(history) < 4:
             continue
         positions = [position for _, _, _, position in history if position]
-        position = positions[-1] if positions else ""
+        # L'historique est parcouru du plus récent au plus ancien.
+        position = positions[0] if positions else ""
         if not is_attacking_player(position):
             continue
         total_w = sum(w for v, w, mins, pos in history)
@@ -584,6 +559,7 @@ def main():
     prediction_records = []
 
     def track_prediction(**values):
+        values.setdefault("source", "bzzoiro")
         prediction_records.append(values)
 
     matchs_analyses = 0
@@ -725,8 +701,6 @@ def main():
                     total_corners, corners_variance, line, corners_samples
                 )
                 best_prob = own_corners_prob
-                if bzzoiro_corners_prob is not None:
-                    best_prob = 0.70 * own_corners_prob + 0.30 * bzzoiro_corners_prob
                 best_cote = round(1 / best_prob * 1.04, 2) if best_prob else None
                 if best_prob >= 0.65 and best_cote >= 1.28:
                     confirmation = ""

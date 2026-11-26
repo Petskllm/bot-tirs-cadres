@@ -96,19 +96,15 @@ class TrackingPureFunctionsTests(unittest.TestCase):
             self.assertEqual(row["actual_value"], 28.0)
             self.assertTrue(row["won"])
 
-    def test_settlement_skips_legacy_rows_without_sportapi_source(self):
+    def test_settlement_skips_rows_without_known_source(self):
         import json
         import tempfile
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
             predictions = data_dir / "predictions.jsonl"
-            rows = [
-                {"source": "bzzoiro", "event_id": 101, "market": "total_tirs",
-                 "line": 26.5, "status": "pending"},
-                {"event_id": 102, "market": "total_tirs", "line": 26.5,
-                 "status": "pending"},
-            ]
+            rows = [{"event_id": 102, "market": "total_tirs", "line": 26.5,
+                     "status": "pending"}]
             predictions.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
             with patch.object(tracking, "DATA_DIR", data_dir), patch.object(
                 tracking, "PREDICTIONS_FILE", predictions
@@ -119,6 +115,68 @@ class TrackingPureFunctionsTests(unittest.TestCase):
                 )
             self.assertEqual(changed, 0)
             self.assertEqual([json.loads(line) for line in predictions.read_text().splitlines()], rows)
+
+    def test_bzzoiro_predictions_are_settled_by_their_original_provider(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            predictions = data_dir / "predictions.jsonl"
+            predictions.write_text(json.dumps({
+                "source": "bzzoiro", "model_version": "v2.5-negative-binomial",
+                "event_id": 101, "market": "total_tirs", "line": 26.5,
+                "direction": "over", "probability": 0.7, "status": "pending",
+            }) + "\n", encoding="utf-8")
+            calls = []
+
+            def getter(endpoint):
+                calls.append(endpoint)
+                if endpoint.endswith("/stats/"):
+                    return {"stats": {
+                        "home": {"total_shots": 15, "corner_kicks": 6, "yellow_cards": 2,
+                                 "shots_on_target": 5},
+                        "away": {"total_shots": 13, "corner_kicks": 5, "yellow_cards": 1,
+                                 "shots_on_target": 4},
+                    }}
+                return {"player_stats": []}
+
+            with patch.object(tracking, "DATA_DIR", data_dir), patch.object(
+                tracking, "PREDICTIONS_FILE", predictions
+            ):
+                changed = tracking.settle_pending(getter=getter)
+
+            row = json.loads(predictions.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(changed, 1)
+            self.assertEqual(calls, ["events/101/stats/", "events/101/player-stats/"])
+            self.assertEqual(row["actual_value"], 28.0)
+            self.assertTrue(row["won"])
+            self.assertEqual(row["status"], "settled")
+
+    def test_known_v24_legacy_rows_are_settled_as_bzzoiro(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            predictions = data_dir / "predictions.jsonl"
+            predictions.write_text(json.dumps({
+                "model_version": "v2.4-thresholds-65-lineups", "event_id": 202,
+                "market": "tirs_cadres_equipe", "line": 3.5, "side": "home",
+                "direction": "over", "probability": 0.7, "status": "pending",
+            }) + "\n", encoding="utf-8")
+            payloads = {
+                "events/202/stats/": {"stats": {"home": {"shots_on_target": 4}, "away": {}}},
+                "events/202/player-stats/": {"player_stats": []},
+            }
+            with patch.object(tracking, "DATA_DIR", data_dir), patch.object(
+                tracking, "PREDICTIONS_FILE", predictions
+            ):
+                changed = tracking.settle_pending(getter=payloads.get)
+            row = json.loads(predictions.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(changed, 1)
+            self.assertEqual(row["source"], "bzzoiro")
+            self.assertTrue(row["won"])
 
     def test_reports_do_not_mix_provider_calibration(self):
         import json

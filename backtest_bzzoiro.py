@@ -7,7 +7,6 @@ Le script rejoue uniquement des matchs terminés et borne tous les historiques
 import argparse
 import csv
 import json
-import math
 import os
 import sys
 from collections import defaultdict
@@ -16,6 +15,7 @@ from functools import lru_cache
 
 import requests
 from model_rules import normalized_player_position, select_player_sot, select_team_sot
+from probability import line_probabilities, score_probabilities
 
 BASE = "https://sports.bzzoiro.com/api/v2"
 TOKEN = os.getenv("BZZOIRO_TOKEN")
@@ -38,24 +38,6 @@ def api_get(endpoint):
 @lru_cache(maxsize=4096)
 def cached_get(endpoint):
     return api_get(endpoint)
-
-
-def poisson_plus_de(lam, line):
-    if lam <= 0:
-        return 0.0
-    return 1 - sum(math.exp(-lam) * lam**i / math.factorial(i) for i in range(int(line) + 1))
-
-
-def line_probabilities(mean, variance, line, samples):
-    if mean <= 0:
-        return 0.0, 1.0
-    if samples < 5:
-        over = poisson_plus_de(mean, line)
-        return over, 1 - over
-    sd = math.sqrt(max(mean, variance, 1.0))
-    z = (line - mean) / sd
-    under = 0.5 * (1 + math.erf(z / math.sqrt(2)))
-    return 1 - under, under
 
 
 def parse_time(event):
@@ -153,7 +135,8 @@ def player_profiles(team_id, kickoff, league_id, limit=7):
         average_minutes = sum(item[2] * item[1] for item in history) / weight_sum
         hit_rate = sum(item[1] for item in history if item[0] >= 1.0) / weight_sum
         positions = [item[3] for item in history if item[3]]
-        position = positions[-1] if positions else ""
+        # Les historiques sont ajoutés du plus récent au plus ancien.
+        position = positions[0] if positions else ""
         if average_minutes < 55:
             continue
         if not position:
@@ -294,13 +277,9 @@ def run(args):
         league_id = event.get("league_id")
         home_id, away_id = event.get("home_team_id"), event.get("away_team_id")
         actual = actual_match_values(event)
-        availability = cached_get(f"events/{event['id']}/availability/") or {}
-        available = availability.get("available", {}) if isinstance(availability, dict) else {}
-        starters = set()
-        if availability.get("lineup_status") == "confirmed" and available.get("lineups"):
-            starters = lineup_starter_ids(cached_get(f"events/{event['id']}/lineups/") or {})
-        if not starters:
-            starters = last_official_starters(home_id, kickoff) | last_official_starters(away_id, kickoff)
+        # N'utilise pas la composition du match cible, connue après coup dans
+        # l'API. Le backtest ne retient que les titulaires d'anciens matchs.
+        starters = last_official_starters(home_id, kickoff) | last_official_starters(away_id, kickoff)
         if actual["total_shots"] is None or actual["corners"] is None or actual["cards"] is None:
             skipped["statistiques équipe incomplètes"] += 1
             continue
@@ -314,7 +293,7 @@ def run(args):
             confidence = min(1.0, samples / 8.0)
             probabilities = [("+27", 0.5 + (raw_over - 0.5) * confidence), ("-27", 0.5 + (raw_under - 0.5) * confidence)]
             selection, probability = max(probabilities, key=lambda item: item[1])
-            if samples >= 6 and probability >= 0.58:
+            if 18 < total < 48 and samples >= 6 and probability >= 0.65:
                 won = actual["total_shots"] >= 27 if selection == "+27" else actual["total_shots"] <= 26
                 add_result(rows, "total_tirs", event, selection, probability, actual["total_shots"], won)
             else:
@@ -327,15 +306,17 @@ def run(args):
             variance = home["corner_kicks"]["variance"] + away["corner_kicks"]["variance"]
             samples = min(home["corner_kicks"]["samples"], away["corner_kicks"]["samples"])
             probability, _ = line_probabilities(mean, variance, 9.5, samples)
-            if probability >= 0.61:
+            if probability >= 0.65:
                 add_result(rows, "corners", event, "+9,5", probability, actual["corners"], actual["corners"] >= 10)
 
         if home.get("yellow_cards") and away.get("yellow_cards"):
-            mean = home["yellow_cards"]["average"] + away["yellow_cards"]["average"] + referee_card_adjustment(event)
+            # La fiche arbitre actuelle peut inclure des matchs postérieurs;
+            # elle est donc exclue du backtest historique.
+            mean = home["yellow_cards"]["average"] + away["yellow_cards"]["average"]
             variance = home["yellow_cards"]["variance"] + away["yellow_cards"]["variance"]
             samples = min(home["yellow_cards"]["samples"], away["yellow_cards"]["samples"])
             probability, _ = line_probabilities(mean, variance, 4.5, samples)
-            if probability >= 0.56:
+            if 4.5 <= mean < 11 and samples >= 6 and probability >= 0.65:
                 add_result(rows, "cartons", event, "+4,5", probability, actual["cards"], actual["cards"] >= 5)
 
         if home.get("shots_on_target") and away.get("shots_on_target"):
@@ -375,12 +356,7 @@ def run(args):
     summary = {"matches_seen": len(events), "predictions": len(rows), "skipped": dict(skipped), "markets": {}}
     for market in sorted({row["market"] for row in rows}):
         subset = [row for row in rows if row["market"] == market]
-        summary["markets"][market] = {
-            "predictions": len(subset),
-            "wins": sum(row["won"] for row in subset),
-            "hit_rate": round(sum(row["won"] for row in subset) / len(subset), 4) if subset else None,
-            "average_probability": round(sum(row["probability"] for row in subset) / len(subset), 4) if subset else None,
-        }
+        summary["markets"][market] = score_probabilities(subset)
     summary_path = os.path.splitext(output)[0] + "_summary.json"
     with open(summary_path, "w", encoding="utf-8") as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2)

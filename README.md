@@ -29,17 +29,15 @@ Les lignes suivies explicitement sont `+27/-27 tirs`, `+9,5 corners` et `+4,5 ca
 ```bash
 python -m pip install -r requirements.txt
 export BZZOIRO_TOKEN=...
-export TELEGRAM_TOKEN=...
-export CHAT_ID=...
-python test_bzzoiro.py
+DRY_RUN=1 python test_bzzoiro.py
 ```
 
-Le script envoie un message Telegram lorsqu'il est exécuté. Ne pas le lancer avec des secrets de production pour un simple test de code.
-
-Pour analyser les données et afficher le message sans envoyer Telegram, utiliser `DRY_RUN=1`. Ce mode nécessite seulement `BZZOIRO_TOKEN`.
+Le script est en `DRY_RUN` par défaut : il affiche le message sans envoyer Telegram ni modifier le suivi. Pour un envoi local explicite, renseigne aussi `TELEGRAM_TOKEN` et `CHAT_ID`, puis définis `DRY_RUN=0` :
 
 ```bash
-DRY_RUN=1 BZZOIRO_TOKEN=... python test_bzzoiro.py
+export TELEGRAM_TOKEN=...
+export CHAT_ID=...
+DRY_RUN=0 python test_bzzoiro.py
 ```
 
 ## Backtest local
@@ -55,7 +53,7 @@ python backtest_bzzoiro.py \
   --output backtest_results.csv
 ```
 
-Le backtest ne prouve pas la rentabilité : il mesure le taux de réussite théorique des sélections qui passent les filtres. Pour les tirs cadrés équipe/joueur, les fenêtres d'historique, profils, conditions d'éligibilité et seuils de sélection sont partagés avec la production. Les autres marchés du backtest restent exploratoires et ne reproduisent pas encore intégralement les règles de production. Les résultats doivent être interprétés séparément par marché et avec le nombre de sélections disponibles. Les historiques d'équipes et de joueurs sont bornés avant le coup d'envoi ; les cotes et prédictions recalculées après le match ne sont volontairement pas injectées dans le score historique, car elles créeraient une fuite de données.
+Le backtest ne prouve pas la rentabilité : il mesure les sélections hors échantillon et rapporte, par marché, le Brier, le log-loss, l'écart de calibration et une référence de prévalence. Les règles de seuil sont alignées sur la production autant que possible. Les lineups du match testé et les profils arbitres courants sont exclus lorsqu'ils risquent de révéler une information postérieure au coup d'envoi. Les résultats doivent être interprétés séparément par marché et avec le nombre de sélections disponibles. Les cotes réelles historiques ne sont pas disponibles ici, donc aucun ROI n'est affirmé.
 
 ## Données Bzzoiro exploitées
 
@@ -63,13 +61,15 @@ Le bot utilise uniquement Bzzoiro. Il consulte `availability` avant les sous-res
 
 ## GitHub Actions
 
-Le workflow est manuel avec `workflow_dispatch` et ne se lance pas automatiquement. Lors d'un lancement manuel, `dry_run` est activé par défaut : le bot interroge l'API et affiche le message sans l'envoyer ni modifier les données suivies. Pour collecter/régler les pronostics sans publier sur Telegram, active `track_only` ; le workflow enregistre alors `data/` dans le dépôt. Désactive `dry_run` sans activer `track_only` uniquement si tu veux publier sur Telegram.
+Le workflow `Pronostics Bzzoiro vers Telegram` est manuel. Il attend les secrets `BZZOIRO_TOKEN`, `TELEGRAM_TOKEN` et `CHAT_ID`. Par défaut, `send_telegram` est coché : le lancement envoie le message dans Telegram. Décoche-le pour exécuter un dry-run qui affiche le message dans les logs sans l'envoyer. `track_only` enregistre/règle le suivi sans publication. `persist_history` est coché par défaut : chaque run pousse les mises à jour de `data/` sur la branche lancée afin de conserver l'historique de calibration. Décoche-le si tu ne veux pas ces commits de données.
+
+Le workflow séparé `Backtest et calibration Bzzoiro` rejoue une période de matchs terminés sans appeler Telegram ni pousser de données. Il utilise seulement `BZZOIRO_TOKEN` et publie un CSV ainsi qu'un résumé JSON téléchargeables comme artefact GitHub Actions. Le workflow existant `Bot pronostics SportAPI` est distinct et n'exécute pas le bot Bzzoiro.
 
 La récupération des matchs du jour Bzzoiro est retentée trois fois. Une réponse vide est distinguée d'une erreur HTTP ou réseau. Si Bzzoiro ne répond pas, API-Football est interrogée pour confirmer si des fixtures existent ; elle ne génère toutefois aucun pronostic de secours tant que les historiques Bzzoiro nécessaires ne sont pas disponibles.
 
 ## Limites connues et maintenance
 
-Le bot conserve maintenant chaque sélection réelle dans `data/predictions.jsonl`, puis règle automatiquement les matchs terminés lors des exécutions suivantes. `data/market_report.json` calcule le taux de réussite, l'écart de calibration et le score de Brier par marché ; `data/calibration.json` regroupe les résultats par tranches de probabilité. Le mode `DRY_RUN` ne modifie jamais ces fichiers. Les erreurs d'API sont traitées de manière défensive ; une absence de données peut conduire à l'absence de sélection.
+Le bot conserve chaque sélection réelle dans `data/predictions.jsonl`, puis règle automatiquement les matchs terminés lors des exécutions suivantes. Dans GitHub Actions, active `persist_history` pour pousser ces fichiers sur la branche et préserver l'historique entre runs. `data/market_report.json` calcule le taux de réussite, l'écart de calibration, le score de Brier et le log-loss par marché ; `data/calibration.json` regroupe les résultats par tranches de probabilité. Le mode `DRY_RUN` ne modifie jamais ces fichiers. Les erreurs d'API sont traitées de manière défensive ; une absence de données peut conduire à l'absence de sélection.
 
 Lorsque `API_FOOTBALL_KEY` est disponible, le bot interroge API-Football en
 mode validation uniquement. Il compare les matchs éligibles du jour et affiche
@@ -79,9 +79,9 @@ une sélection. Cette étape permet de mesurer la couverture avant d'utiliser
 gratuit est limité à 100 requêtes par jour ; le module effectue actuellement
 une seule requête de fixtures par exécution.
 
-Les réponses API sont mises en cache pendant l'exécution afin d'éviter de redemander plusieurs fois les mêmes événements et statistiques. Le modèle des tirs utilise les moyennes pondérées des dix derniers matchs disponibles, séparées domicile/extérieur, ainsi que la variance historique des tirs. Il utilise une approximation normale lorsque l'échantillon est suffisant et revient à Poisson avec peu de données. Les champs `total_shots`, `shots_on_target`, `shots_off_target`, `blocked_shots`, `hit_woodwork` et `xg` sont lus lorsqu'ils sont disponibles ; `xg` reste une information complémentaire et n'est pas converti artificiellement en nombre de tirs. Les absences offensives explicitement identifiées par `availability` sont prises en compte avec une correction plafonnée, tandis qu'une absence sans poste connu est ignorée pour éviter de pénaliser à tort une équipe.
+Les réponses API sont mises en cache pendant l'exécution afin d'éviter de redemander plusieurs fois les mêmes événements et statistiques. Le modèle utilise les moyennes pondérées des dix derniers matchs disponibles, séparées domicile/extérieur, et la variance historique. Les comptages utilisent Poisson lorsque la variance ne dépasse pas la moyenne, et une binomiale négative en cas de surdispersion. Ce choix est une hypothèse de modélisation, pas une calibration validée; la calibration doit être évaluée par backtest chronologique et par marché. Les champs `total_shots`, `shots_on_target`, `shots_off_target`, `blocked_shots`, `hit_woodwork` et `xg` sont lus lorsqu'ils sont disponibles ; `xg` reste une information complémentaire et n'est pas converti artificiellement en nombre de tirs. Les absences offensives explicitement identifiées par `availability` sont prises en compte avec une correction plafonnée, tandis qu'une absence sans poste connu est ignorée pour éviter de pénaliser à tort une équipe.
 
-Une calibration empirique par championnat, équipe et cotes réelles nécessitera encore un historique de résultats. Les seuils de confiance doivent donc être réévalués après plusieurs dizaines de matchs résolus. Les lignes corners, cartons et tirs cadrés utilisent maintenant le même profil pondéré et la même gestion de variance que les tirs totaux.
+Le dépôt ne contient pas encore de résultats réglés suffisants pour affirmer que les probabilités sont calibrées ou qu'une formule est meilleure. Le suivi est maintenant attribué au fournisseur Bzzoiro et les lignes v2.4 connues peuvent être réglées au prochain run. Les seuils devront être réévalués après plusieurs dizaines de matchs résolus par marché; le backtest dédié compare des scores propres, mais ne supprime pas les incertitudes liées à la couverture des données.
 
 
 ## Nouveau socle Python modulaire
@@ -116,6 +116,6 @@ Les tests du nouveau paquet n'appellent pas l'API :
 PYTHONPATH=src pytest -q tests/unit
 ```
 
-Les scripts et tests historiques à la racine du dépôt restent inchangés. Le nouveau paquet est volontairement ajouté en parallèle afin de permettre une migration progressive.
+Le nouveau paquet reste séparé afin de permettre une migration progressive. Les scripts historiques ont été ajustés pour le lancement Telegram dédié, le suivi Bzzoiro et l'évaluation du modèle probabiliste.
 
 Références utilisées pour les routes et limites : [conventions et quotas Bzzoiro](https://sports.bzzoiro.com/docs/conventions/), [événements, statistiques et incidents](https://sports.bzzoiro.com/docs/football/events/), [statistiques joueurs](https://sports.bzzoiro.com/docs/football/teams-players/) et [arbitres](https://sports.bzzoiro.com/docs/football/managers-referees-venues/).

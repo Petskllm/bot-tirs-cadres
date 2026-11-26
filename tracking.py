@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 from collections import defaultdict
@@ -157,7 +158,14 @@ def settle_pending(getter=None, sportapi_getter=None, api_football_getter=None):
         if row.get("status") != "pending":
             continue
         source = row.get("source")
-        if source == "sportapi" and sportapi_getter:
+        # Les lignes v2.4 sont les archives du script Bzzoiro antérieur au
+        # champ `source`; ne pas inférer la provenance des autres versions.
+        if not source and row.get("model_version") == "v2.4-thresholds-65-lineups":
+            source = "bzzoiro"
+            row["source"] = source
+        if source == "bzzoiro" and getter:
+            actuals = _actuals(getter, row.get("event_id"))
+        elif source == "sportapi" and sportapi_getter:
             actuals = _sportapi_actuals(sportapi_getter, row.get("event_id"))
         elif source == "api_football" and api_football_getter:
             actuals = _api_football_actuals(api_football_getter, row.get("event_id"))
@@ -201,13 +209,23 @@ def build_reports():
 
     report = {"generated_at": now_iso(), "settled_predictions": len(rows), "markets": {}}
     for market, values in sorted(market_groups.items()):
+        hit_rate = sum(won for _, won in values) / len(values)
+        brier_score = sum((prob - won) ** 2 for prob, won in values) / len(values)
+        baseline_brier = hit_rate * (1 - hit_rate)
         report["markets"][market] = {
             "predictions": len(values),
             "wins": sum(won for _, won in values),
-            "hit_rate": round(sum(won for _, won in values) / len(values), 4),
+            "hit_rate": round(hit_rate, 4),
             "average_probability": round(sum(prob for prob, _ in values) / len(values), 4),
-            "calibration_gap": round(sum(won - prob for prob, won in values) / len(values), 4),
-            "brier_score": round(sum((prob - won) ** 2 for prob, won in values) / len(values), 4),
+            "calibration_gap": round(hit_rate - sum(prob for prob, _ in values) / len(values), 4),
+            "brier_score": round(brier_score, 4),
+            "log_loss": round(-sum(
+                won * math.log(min(1 - 1e-15, max(1e-15, prob)))
+                + (1 - won) * math.log(1 - min(1 - 1e-15, max(1e-15, prob)))
+                for prob, won in values
+            ) / len(values), 4),
+            "prevalence_baseline_brier": round(baseline_brier, 4),
+            "brier_skill_vs_prevalence": round(1 - brier_score / baseline_brier, 4) if baseline_brier > 0 else None,
         }
     calibration = {"generated_at": report["generated_at"], "markets": {}}
     for (market, bucket), values in sorted(buckets.items()):
