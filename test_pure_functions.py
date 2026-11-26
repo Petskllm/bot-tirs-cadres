@@ -1,4 +1,6 @@
 """Tests unitaires déterministes des helpers métier sans réseau ni stockage."""
+import importlib
+import os
 import unittest
 from unittest.mock import patch
 
@@ -8,8 +10,19 @@ import backtest_bzzoiro as backtest
 import tracking
 import bot_sportapi
 import sportapi_provider as sportapi
-from model_rules import is_attacking_player, is_confirmed_lineup, select_player_sot, select_team_sot
+from model_rules import (
+    cards_market_key,
+    cards_selection_label,
+    is_attacking_player,
+    is_confirmed_lineup,
+    lineup_starter_ids,
+    resolve_player_lineup,
+    select_cards_markets,
+    select_player_sot,
+    select_team_sot,
+)
 from tracking import _bucket, _number, _prediction_key, _won
+from telegram_message import build_telegram_messages
 
 
 class TrackingPureFunctionsTests(unittest.TestCase):
@@ -26,7 +39,7 @@ class TrackingPureFunctionsTests(unittest.TestCase):
         self.assertEqual(_bucket(-2), "00-09%")
 
     def test_won_resolves_market_side_and_direction(self):
-        actuals = {"total_tirs": 27.0, "home_sot": 4.0, "away_sot": 3.0,
+        actuals = {"total_tirs": 27.0, "home_sot": 4.0, "away_sot": 3.0, "cartons": 4.0,
                    "players": {"p-1": 2.0}}
         row = {"market": "total_tirs", "line": 26.5, "direction": "over"}
         self.assertEqual(_won(row, actuals), (27.0, True))
@@ -35,6 +48,10 @@ class TrackingPureFunctionsTests(unittest.TestCase):
                                "side": "home"}, actuals), (4.0, True))
         self.assertEqual(_won({"market": "tirs_cadres_joueur", "line": 1.5,
                                "player_id": "p-1"}, actuals), (2.0, True))
+        self.assertEqual(_won({"market": "cartons_over_3_5", "line": 3.5,
+                               "direction": "over"}, actuals), (4.0, True))
+        self.assertEqual(_won({"market": "cartons_under_4_5", "line": 4.5,
+                               "direction": "under"}, actuals), (4.0, True))
 
     def test_won_reports_unsettleable_rows(self):
         self.assertEqual(_won({"market": "unknown", "line": 1}, {}), (None, None))
@@ -291,9 +308,90 @@ class ShotOnTargetModelRulesTests(unittest.TestCase):
             with self.subTest(availability=availability):
                 self.assertFalse(is_confirmed_lineup(availability))
 
+    def test_player_lineup_falls_back_to_last_official_starters_with_warning(self):
+        starters, source = resolve_player_lineup(
+            {"available": {"lineups": True}, "lineup_status": "predicted"},
+            set(), {"player-1", 2},
+        )
+        self.assertEqual(starters, {"player-1", "2"})
+        self.assertEqual(source, "dernière composition officielle connue — à vérifier")
+
+    def test_confirmed_current_lineup_has_precedence_over_previous_lineup(self):
+        starters, source = resolve_player_lineup(
+            {"available": {"lineups": True}, "lineup_status": "confirmed"},
+            {"current-player"}, {"previous-player"},
+        )
+        self.assertEqual(starters, {"current-player"})
+        self.assertEqual(source, "composition confirmée")
+
+    def test_lineup_starter_extractor_tolerates_null_and_malformed_payloads(self):
+        self.assertEqual(lineup_starter_ids({"lineups": None}), set())
+        self.assertEqual(lineup_starter_ids(None), set())
+        self.assertEqual(lineup_starter_ids({"home": None, "away": {"players": "bad"}}), set())
+
+    def test_cards_selector_includes_over_35_and_under_45_with_sample_guard(self):
+        profile = {"average": 4.0, "variance": 2.0, "samples": 8}
+        probability_fn = self.probabilities({3.5: 0.80, 4.5: 0.20})
+        selections = select_cards_markets(profile, probability_fn)
+        self.assertEqual(selections, [(3.5, "over", 0.80), (4.5, "under", 0.8)])
+        self.assertEqual(cards_market_key(3.5, "over"), "cartons_over_3_5")
+        self.assertEqual(cards_selection_label(3.5, "over"), "+3,5")
+        self.assertEqual(cards_selection_label(4.5, "under"), "-4,5")
+        self.assertEqual(select_cards_markets({**profile, "samples": 5}, probability_fn), [])
+
     def test_position_filter_accepts_attacking_midfielder_not_defender(self):
         self.assertTrue(is_attacking_player("Attacking Midfielder"))
         self.assertFalse(is_attacking_player("Centre Back"))
+
+
+class TelegramMessageTests(unittest.TestCase):
+    def test_long_market_sections_are_chunked_without_dropping_predictions(self):
+        picks = [f"Pronostic {index}: " + ("x" * 60) for index in range(4)]
+        messages = build_telegram_messages(
+            "En-tête du bot\nDate du jour",
+            [("🚩 CORNERS :", picks), ("🟨 CARTONS :", ["Plus de 3,5"])],
+            max_chars=160,
+        )
+        combined = "\n".join(messages)
+        self.assertGreater(len(messages), 1)
+        self.assertTrue(all(len(message) <= 160 for message in messages))
+        for pick in picks:
+            self.assertIn(pick, combined)
+        self.assertIn("Plus de 3,5", combined)
+        self.assertIn("CORNERS : (suite)", combined)
+
+
+class DailyEventsTests(unittest.TestCase):
+    def test_fetches_each_league_and_deduplicates_daily_fixtures(self):
+        with patch.dict(os.environ, {"BZZOIRO_TOKEN": "test-token", "DRY_RUN": "1"}, clear=False):
+            bzzoiro = importlib.import_module("test_bzzoiro")
+        calls = []
+
+        class Response:
+            status_code = 200
+
+            def __init__(self, results):
+                self.results = results
+
+            def json(self):
+                return {"results": self.results}
+
+        def fake_get(url, **kwargs):
+            calls.append(url)
+            if "league_id=1" in url:
+                return Response([{"id": 10, "event_date": "2026-11-26T16:00:00Z"},
+                                 {"id": 11, "event_date": "2026-11-26T21:00:00Z"}])
+            return Response([{"id": 11, "event_date": "2026-11-26T21:00:00Z"},
+                             {"id": 12, "event_date": "2026-11-26T22:00:00Z"}])
+
+        with patch.object(bzzoiro.requests, "get", side_effect=fake_get):
+            payload, error = bzzoiro.get_daily_events(
+                "2026-11-26", league_ids=["1", "2"]
+            )
+        self.assertIsNone(error)
+        self.assertEqual({event["id"] for event in payload["results"]}, {10, 11, 12})
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all("date_from=2026-11-26&date_to=2026-11-26" in url for url in calls))
 
 
 class BacktestProfileTests(unittest.TestCase):

@@ -141,7 +141,7 @@ def _won(row, actuals):
         actual = actuals.get("total_tirs")
     elif market == "corners":
         actual = actuals.get("corners")
-    elif market == "cartons":
+    elif market == "cartons" or str(market).startswith("cartons_"):
         actual = actuals.get("cartons")
     elif market == "tirs_cadres_equipe":
         actual = actuals.get("home_sot" if row.get("side") == "home" else "away_sot")

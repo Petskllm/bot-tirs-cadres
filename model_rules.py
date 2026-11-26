@@ -11,6 +11,9 @@ PLAYER_OVER_05_MIN_PROBABILITY = 0.70
 PLAYER_OVER_05_MIN_HIT_RATE = 0.55
 PLAYER_OVER_15_MIN_PROBABILITY = 0.65
 PLAYER_OVER_15_MIN_HIT_RATE = 0.40
+CARDS_LINES = (3.5, 4.5)
+CARDS_MIN_SAMPLES = 6
+CARDS_MIN_PROBABILITY = 0.65
 
 
 def is_confirmed_lineup(availability):
@@ -23,6 +26,79 @@ def is_confirmed_lineup(availability):
         and available.get("lineups")
         and availability.get("lineup_status") == "confirmed"
     )
+
+
+def resolve_player_lineup(availability, current_starters, previous_starters):
+    """Préférer la compo officielle du match, sinon l'ancienne en l'étiquetant."""
+    current = {str(player_id) for player_id in (current_starters or []) if player_id is not None}
+    previous = {str(player_id) for player_id in (previous_starters or []) if player_id is not None}
+    confirmed = is_confirmed_lineup(availability)
+    if confirmed and current:
+        return current, "composition confirmée"
+    if previous:
+        return previous, "dernière composition officielle connue — à vérifier"
+    if confirmed:
+        return set(), "composition confirmée indisponible"
+    return set(), "composition du jour non confirmée"
+
+
+def lineup_starter_ids(lineups, side=None):
+    """Extrait les titulaires et tolère les compositions absentes ou nulles."""
+    if not isinstance(lineups, dict):
+        return set()
+    payload = lineups.get("lineups", lineups)
+    if not isinstance(payload, dict):
+        return set()
+    sides = (side,) if side in {"home", "away"} else ("home", "away")
+    found = set()
+    for team_side in sides:
+        side_data = payload.get(team_side, {})
+        if not isinstance(side_data, dict):
+            continue
+        players = side_data.get("players", [])
+        if not isinstance(players, list):
+            continue
+        for player in players:
+            if not isinstance(player, dict):
+                continue
+            player_id = player.get("id", player.get("player_id"))
+            if player_id is not None:
+                found.add(str(player_id))
+    return found
+
+
+def select_cards_markets(profile, line_probabilities):
+    """Retourne chaque ligne over/under cartons atteignant les seuils prudents."""
+    if not profile or profile.get("samples", 0) < CARDS_MIN_SAMPLES:
+        return []
+    try:
+        mean = float(profile["average"])
+        variance = float(profile["variance"])
+        samples = int(profile["samples"])
+    except (KeyError, TypeError, ValueError):
+        return []
+
+    candidates = []
+    for line in CARDS_LINES:
+        over_probability, under_probability = line_probabilities(
+            mean, variance, line, samples
+        )
+        if over_probability >= CARDS_MIN_PROBABILITY:
+            candidates.append((line, "over", over_probability))
+        if under_probability >= CARDS_MIN_PROBABILITY:
+            candidates.append((line, "under", under_probability))
+    return sorted(candidates, key=lambda item: (-item[2], item[0], item[1]))
+
+
+def cards_market_key(line, direction):
+    """Identifiant distinct pour calibrer chaque ligne et chaque direction."""
+    return f"cartons_{direction}_{str(float(line)).replace('.', '_')}"
+
+
+def cards_selection_label(line, direction):
+    """Libellé court commun à Telegram, au suivi et au backtest."""
+    sign = "+" if direction == "over" else "-"
+    return f"{sign}{float(line):.1f}".replace(".", ",")
 
 
 def normalized_player_position(profile):

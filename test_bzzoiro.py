@@ -8,13 +8,19 @@ from api_football_validation import diagnose_api_football, format_report, valida
 from bot_modes import should_persist_results, should_send_telegram
 from model_rules import (
     BZZOIRO_TEAM_SOT_MIN_SAMPLES,
+    cards_market_key,
+    cards_selection_label,
     is_attacking_player,
     is_confirmed_lineup,
+    lineup_starter_ids,
     normalized_player_position,
+    resolve_player_lineup,
+    select_cards_markets,
     select_player_sot,
     select_team_sot,
 )
 from probability import line_probabilities
+from telegram_message import build_telegram_messages
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BZZOIRO_TOKEN")
@@ -25,15 +31,7 @@ TRACK_ONLY = os.getenv("TRACK_ONLY", "0").lower() in {"1", "true", "yes"}
 API_FOOTBALL_DIAGNOSTIC = os.getenv("API_FOOTBALL_DIAGNOSTIC", "0").lower() in {"1", "true", "yes"}
 BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
-MODEL_VERSION = "v2.6-confirmed-lineups-samples8"
-
-# Marché prioritaire : +4,5 cartons. Le seuil de probabilité reste le filtre
-# principal, mais on exige un historique minimum pour éviter les belles cotes
-# produites sur deux ou trois matchs seulement.
-CARDS_MIN_PROB = 0.65
-CARDS_MIN_SAMPLES = 6
-CARDS_MIN_EXPECTED = 4.5
-
+MODEL_VERSION = "v2.7-last-lineup-all-markets"
 
 def utc_date():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -60,35 +58,57 @@ def api_get(endpoint):
         return None
 
 
-def get_daily_events(today, attempts=3):
-    """Récupère les matchs du jour avec relances et état diagnostic.
+def get_daily_events(today, attempts=3, league_ids=None):
+    """Récupère toute la journée par ligue suivie, avec relances et déduplication.
 
-    Retourne (payload, error). Une réponse HTTP valide mais vide n'est pas
-    confondue avec une erreur réseau ou serveur.
+    Les réponses sont dédupliquées par identifiant, ce qui évite de manquer les
+    ligues suivies lorsque le résultat global dépasse la limite de l'API.
+    Retourne (payload, error), en conservant les résultats partiels éventuels.
     """
-    endpoint = f"events/?date_from={today}&date_to={today}&limit=200"
-    last_error = None
-    for attempt in range(1, attempts + 1):
-        try:
-            response = requests.get(f"{BASE}/{endpoint}", headers=headers, timeout=15)
-            if response.status_code != 200:
-                last_error = f"HTTP {response.status_code}"
-            else:
-                payload = response.json()
-                if isinstance(payload, dict):
-                    return payload, None
-                last_error = "réponse JSON invalide"
-        except (requests.RequestException, ValueError) as exc:
-            last_error = type(exc).__name__
-        if attempt < attempts:
-            time.sleep(2)
-    return None, last_error or "réponse vide"
+    league_ids = sorted({str(league_id) for league_id in (league_ids or [])})
+    query_leagues = league_ids or [None]
+    found = {}
+    errors = []
+    for league_id in query_leagues:
+        endpoint = f"events/?date_from={today}&date_to={today}&limit=200"
+        if league_id is not None:
+            endpoint += f"&league_id={league_id}"
+        last_error = None
+        for attempt in range(1, attempts + 1):
+            try:
+                response = requests.get(f"{BASE}/{endpoint}", headers=headers, timeout=15)
+                if response.status_code != 200:
+                    last_error = f"HTTP {response.status_code}"
+                else:
+                    payload = response.json()
+                    results = payload.get("results") if isinstance(payload, dict) else None
+                    if isinstance(results, list):
+                        for event in results:
+                            if isinstance(event, dict) and event.get("id") is not None:
+                                found[str(event["id"])] = event
+                        last_error = None
+                        break
+                    last_error = "liste de résultats invalide"
+            except (requests.RequestException, ValueError) as exc:
+                last_error = type(exc).__name__
+            if attempt < attempts:
+                time.sleep(2)
+        if last_error:
+            errors.append(f"ligue {league_id or 'globale'}: {last_error}")
 
-def send_telegram(msg):
-    for i in range(0, len(msg), 4000):
+    payload = {"results": list(found.values())}
+    error = "; ".join(errors) if errors else None
+    if not found and error:
+        return None, error
+    return payload, error
+
+def send_telegram(messages):
+    if isinstance(messages, str):
+        messages = [messages]
+    for msg in messages:
         response = requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT, "text": msg[i:i+4000]},
+            json={"chat_id": TG_CHAT, "text": msg},
             timeout=15,
         )
         response.raise_for_status()
@@ -312,19 +332,6 @@ def bzzoiro_consensus_corner_odds(odds):
     return None
 
 
-def lineup_starter_ids(lineups):
-    """Extrait les titulaires Bzzoiro : players, hors substitutes."""
-    found = set()
-    payload = lineups.get("lineups", lineups) if isinstance(lineups, dict) else {}
-    for side in ("home", "away"):
-        players = payload.get(side, {}).get("players", [])
-        for player in players if isinstance(players, list) else []:
-            player_id = player.get("id", player.get("player_id"))
-            if player_id:
-                found.add(str(player_id))
-    return found
-
-
 @lru_cache(maxsize=256)
 def get_last_official_starters(team_id):
     """Retourne les titulaires du dernier match terminé avec une composition."""
@@ -339,16 +346,10 @@ def get_last_official_starters(team_id):
     finished.sort(key=lambda event: event.get("event_date", ""), reverse=True)
     for event in finished[:10]:
         lineups = get_event_lineups(event.get("id"))
-        payload = lineups.get("lineups", lineups) if isinstance(lineups, dict) else {}
         for side in ("home", "away"):
             if str(event.get(f"{side}_team_id")) != str(team_id):
                 continue
-            players = payload.get(side, {}).get("players", [])
-            starters = {
-                str(player.get("id", player.get("player_id")))
-                for player in players
-                if isinstance(player, dict) and player.get("id", player.get("player_id"))
-            }
+            starters = lineup_starter_ids(lineups, side)
             if starters:
                 return starters
     return set()
@@ -521,8 +522,13 @@ def main():
 
     print("⏳ Analyse globale (version Domicile/Extérieur + xG)...")
     today = utc_date()
-
-    events, events_error = get_daily_events(today)
+    approved_league_ids = [
+        league_id for league_id, name in league_map.items()
+        if " ".join(name.split()) in LIGUES_AUTORISEES
+    ]
+    events, events_error = get_daily_events(today, league_ids=approved_league_ids)
+    if events_error and events and events.get("results"):
+        print(f"⚠️ Réponse partielle de l'API : {events_error}")
     if not events or not events.get("results"):
         fallback = validate_matches([], today)
         api_count = fallback.get("api_fixtures", 0) if fallback.get("enabled") else 0
@@ -547,7 +553,9 @@ def main():
             send_telegram(message)
         return
 
-    matches = events["results"]
+    matches = sorted(
+        events["results"], key=lambda match: match.get("event_date") or ""
+    )
     validation_matches = []
     for match in matches:
         if match.get("status") != "notstarted":
@@ -571,7 +579,6 @@ def main():
 
     matchs_analyses = 0
     matchs_ignores = 0
-    start_time = time.time()
 
     for m in matches:
         if m.get("status") != "notstarted":
@@ -594,11 +601,17 @@ def main():
         away_id = m.get("away_team_id")
         availability = get_event_availability(fid)
         available = availability.get("available", {}) if isinstance(availability, dict) else {}
-        starters = set()
-        lineup_source = "composition du jour non confirmée"
-        if is_confirmed_lineup(availability):
-            starters = lineup_starter_ids(get_event_lineups(fid))
-            lineup_source = "composition confirmée" if starters else "composition confirmée indisponible"
+        confirmed_today = is_confirmed_lineup(availability)
+        current_starters = lineup_starter_ids(get_event_lineups(fid)) if confirmed_today else set()
+        previous_starters = set()
+        if not current_starters:
+            if home_id:
+                previous_starters |= get_last_official_starters(home_id)
+            if away_id:
+                previous_starters |= get_last_official_starters(away_id)
+        starters, lineup_source = resolve_player_lineup(
+            availability, current_starters, previous_starters
+        )
         prediction = get_event_prediction(fid) if available.get("prediction") else {}
         odds = get_event_odds(fid) if available.get("odds") else {}
         bzzoiro_corners_prob = bzzoiro_corner_probability(prediction)
@@ -733,32 +746,32 @@ def main():
             h_yellow = h_profile["yellow_cards"]
             a_yellow = a_profile["yellow_cards"]
             referee_adjustment = referee_card_adjustment(m)
-            total_cards = h_yellow["average"] + a_yellow["average"] + referee_adjustment
+            total_cards = max(0.0, h_yellow["average"] + a_yellow["average"] + referee_adjustment)
             cards_variance = h_yellow["variance"] + a_yellow["variance"]
             cards_samples = min(h_yellow["samples"], a_yellow["samples"])
-            if (
-                CARDS_MIN_EXPECTED <= total_cards < 11
-                and cards_samples >= CARDS_MIN_SAMPLES
-            ):
-                line = 4.5
-                best_prob, _ = line_probabilities(
-                    total_cards, cards_variance, line, cards_samples
-                )
-                best_cote = round(1 / best_prob * 1.04, 2) if best_prob else None
-                # Pour les cartons, le seuil de confiance suffit : une cote
-                # basse reflète une probabilité élevée et ne doit pas cacher
-                # une sélection à 65 % ou plus.
-                if best_prob >= CARDS_MIN_PROB:
+            if total_cards < 11:
+                card_profile = {
+                    "average": total_cards,
+                    "variance": cards_variance,
+                    "samples": cards_samples,
+                }
+                for line, direction, probability in select_cards_markets(
+                    card_profile, line_probabilities
+                ):
+                    selection = cards_selection_label(line, direction)
+                    market = cards_market_key(line, direction)
+                    cote = round(1 / probability * 1.04, 2)
+                    verb = "Plus de" if direction == "over" else "Moins de"
                     picks_cartons.append(
                         f"🟨 {match_title}\n"
                         + f"  Cartons attendus : {total_cards:.1f}"
                         + (f" (arbitre : {referee_adjustment:+.1f})\n" if referee_adjustment else "\n")
-                        + f"  • +4,5 cartons : {best_prob:.0%} (Cote estimée : {best_cote})"
+                        + f"  • {verb} {str(line).replace('.', ',')} cartons : {probability:.0%} (Cote estimée : {cote})"
                     )
                     track_prediction(
                         event_id=fid, kickoff=m.get("event_date"), match=match_title,
-                        market="cartons", selection="+4,5", line=4.5, direction="over",
-                        probability=best_prob, estimated_odds=best_cote,
+                        market=market, selection=selection, line=line, direction=direction,
+                        probability=probability, estimated_odds=cote,
                         samples=cards_samples, referee_adjustment=referee_adjustment,
                     )
 
@@ -815,9 +828,6 @@ def main():
                     expected_mean=avg_sots, expected_variance=player_profile["variance"],
                 )
 
-        if matchs_analyses >= 14 or (time.time() - start_time) > 280:
-            break
-
     # --- COMBINÉ TIRS TOTAUX ---
     combo_pool_totals.sort(key=lambda x: -x["prob"])
     combo_picks = []
@@ -834,6 +844,7 @@ def main():
 
     # --- MESSAGE TELEGRAM ---
     msg = f"🎯 PRONOS TIRS & xG (Version D/E + xG)\n📅 {datetime.now().strftime('%d/%m/%Y')}\n"
+    msg += "🕒 Périmètre : matchs non commencés de toute la journée (ligues suivies)\n"
     msg += f"🔎 Matchs analysés : {matchs_analyses} (Top ligues)\n"
     msg += f"🚫 Autres matchs ignorés : {matchs_ignores}\n\n"
     msg += format_report(api_football_report) + "\n\n"
@@ -847,27 +858,21 @@ def main():
     elif picks_total:
         msg += "⚠️ _Pas assez de matchs pour un combiné aujourd'hui._\n\n"
 
-    if picks_total:
-        msg += "📈 TIRS TOTAUX :\n" + "\n\n".join(picks_total[:5]) + "\n\n"
-
-    if picks_corners:
-        msg += "🚩 CORNERS :\n" + "\n\n".join(picks_corners[:3]) + "\n\n"
-
-    if picks_cartons:
-        msg += "🟨 CARTONS :\n" + "\n\n".join(picks_cartons[:3]) + "\n\n"
-
-    if picks_cadres_eq:
-        msg += "🎯 TIRS CADRÉS (Équipes) :\n" + "\n\n".join(picks_cadres_eq[:3]) + "\n\n"
-
-    if picks_cadres_joueurs:
-        msg += "👤 TIRS CADRÉS (Joueurs) :\n" + "\n\n".join(picks_cadres_joueurs[:4]) + "\n\n"
-
     if not any([picks_total, picks_cadres_eq, picks_cadres_joueurs, picks_corners, picks_cartons]):
         msg += "❌ Aucune sélection ne passe les filtres aujourd'hui."
 
+    sections = [
+        ("📈 TIRS TOTAUX :", picks_total),
+        ("🚩 CORNERS :", picks_corners),
+        ("🟨 CARTONS :", picks_cartons),
+        ("🎯 TIRS CADRÉS (Équipes) :", picks_cadres_eq),
+        ("👤 TIRS CADRÉS (Joueurs) :", picks_cadres_joueurs),
+    ]
+    messages = build_telegram_messages(msg, sections)
+
     if not should_persist_results(DRY_RUN, TRACK_ONLY):
         print("🧪 DRY_RUN actif : aucun message Telegram envoyé")
-        print(msg)
+        print("\n\n--- message suivant ---\n\n".join(messages))
         return
 
     added = record_predictions(prediction_records, MODEL_VERSION)
@@ -877,7 +882,7 @@ def main():
     if not should_send_telegram(DRY_RUN, TRACK_ONLY):
         print("🧪 Mode suivi seul : aucun message Telegram envoyé")
         return
-    send_telegram(msg)
+    send_telegram(messages)
     print("✅ Message envoyé !")
 
 if __name__ == "__main__":

@@ -18,7 +18,10 @@ from model_rules import (
     BZZOIRO_TEAM_SOT_MIN_SAMPLES,
     PLAYER_SOT_MIN_AVG_MINUTES,
     PLAYER_SOT_MIN_SAMPLES,
+    cards_market_key,
+    cards_selection_label,
     normalized_player_position,
+    select_cards_markets,
     select_player_sot,
     select_team_sot,
 )
@@ -326,9 +329,16 @@ def run(args):
             mean = home["yellow_cards"]["average"] + away["yellow_cards"]["average"]
             variance = home["yellow_cards"]["variance"] + away["yellow_cards"]["variance"]
             samples = min(home["yellow_cards"]["samples"], away["yellow_cards"]["samples"])
-            probability, _ = line_probabilities(mean, variance, 4.5, samples)
-            if 4.5 <= mean < 11 and samples >= 6 and probability >= 0.65:
-                add_result(rows, "cartons", event, "+4,5", probability, actual["cards"], actual["cards"] >= 5)
+            if mean < 11:
+                card_profile = {"average": mean, "variance": variance, "samples": samples}
+                selections = select_cards_markets(card_profile, line_probabilities)
+                for line, direction, probability in selections:
+                    selection = cards_selection_label(line, direction)
+                    market = cards_market_key(line, direction)
+                    won = actual["cards"] > line if direction == "over" else actual["cards"] <= line
+                    add_result(rows, market, event, selection, probability, actual["cards"], won)
+            else:
+                skipped["cartons au-dessus du plafond de moyenne"] += 1
 
         if home.get("shots_on_target") and away.get("shots_on_target"):
             for team_key, team_id, side, actual_key in (("home", home_id, "home", "home_sot"), ("away", away_id, "away", "away_sot")):
