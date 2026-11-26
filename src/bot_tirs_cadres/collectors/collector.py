@@ -30,10 +30,12 @@ def _all_events(api: BzzoiroAPI, start: date, end: date, status: str, cfg: AppCo
     combined: dict[int, dict[str, Any]] = {}
     each_limit = max(1, cfg.max_history_matches)
     for league_id in league_ids:
-        events = api.list_events(
-            date_from=start, date_to=end, status=status, league_id=league_id,
-            max_events=each_limit,
-        )
+        params = {
+            "date_from": start, "date_to": end, "status": status, "league_id": league_id,
+        }
+        if status == "finished":
+            params["max_events"] = each_limit
+        events = api.list_events(**params)
         for event in events:
             event_id = _id(event, "id", "event_id")
             if event_id is not None:

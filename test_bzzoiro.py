@@ -70,31 +70,63 @@ def get_daily_events(today, attempts=3, league_ids=None):
     found = {}
     errors = []
     for league_id in query_leagues:
-        endpoint = f"events/?date_from={today}&date_to={today}&limit=200"
-        if league_id is not None:
-            endpoint += f"&league_id={league_id}"
-        last_error = None
-        for attempt in range(1, attempts + 1):
-            try:
-                response = requests.get(f"{BASE}/{endpoint}", headers=headers, timeout=15)
-                if response.status_code != 200:
-                    last_error = f"HTTP {response.status_code}"
-                else:
-                    payload = response.json()
-                    results = payload.get("results") if isinstance(payload, dict) else None
-                    if isinstance(results, list):
-                        for event in results:
-                            if isinstance(event, dict) and event.get("id") is not None:
-                                found[str(event["id"])] = event
-                        last_error = None
-                        break
-                    last_error = "liste de résultats invalide"
-            except (requests.RequestException, ValueError) as exc:
-                last_error = type(exc).__name__
-            if attempt < attempts:
-                time.sleep(2)
-        if last_error:
-            errors.append(f"ligue {league_id or 'globale'}: {last_error}")
+        offset = 0
+        seen_page_signatures = set()
+        while True:
+            endpoint = f"events/?date_from={today}&date_to={today}&limit=200&offset={offset}"
+            if league_id is not None:
+                endpoint += f"&league_id={league_id}"
+            last_error = None
+            page_payload = None
+            page_records = None
+            for attempt in range(1, attempts + 1):
+                try:
+                    response = requests.get(f"{BASE}/{endpoint}", headers=headers, timeout=15)
+                    if response.status_code != 200:
+                        last_error = f"HTTP {response.status_code}"
+                    else:
+                        page_payload = response.json()
+                        results = (
+                            page_payload.get("results")
+                            if isinstance(page_payload, dict)
+                            else page_payload if isinstance(page_payload, list) else None
+                        )
+                        if isinstance(results, list):
+                            page_records = [event for event in results if isinstance(event, dict)]
+                            last_error = None
+                            break
+                        last_error = "liste de résultats invalide"
+                except (requests.RequestException, ValueError) as exc:
+                    last_error = type(exc).__name__
+                if attempt < attempts:
+                    time.sleep(2)
+
+            if last_error:
+                errors.append(f"ligue {league_id or 'globale'}, offset {offset}: {last_error}")
+                break
+            if not page_records:
+                break
+
+            for event in page_records:
+                event_id = event.get("id")
+                if event_id is not None:
+                    event_id = str(event_id)
+                    found[event_id] = event
+
+            has_next = isinstance(page_payload, dict) and bool(page_payload.get("next"))
+            if not has_next:
+                break
+            page_signature = tuple(
+                str(event.get("id")) if event.get("id") is not None else repr(event)
+                for event in page_records
+            )
+            if page_signature in seen_page_signatures:
+                errors.append(
+                    f"ligue {league_id or 'globale'}, offset {offset}: page répétée malgré un next"
+                )
+                break
+            seen_page_signatures.add(page_signature)
+            offset += len(page_records)
 
     payload = {"results": list(found.values())}
     error = "; ".join(errors) if errors else None

@@ -34,25 +34,41 @@ class BzzoiroAPI:
         date_to: date | str,
         status: str,
         league_id: int | None = None,
-        max_events: int = 500,
+        max_events: int | None = None,
     ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
             "date_from": str(date_from), "date_to": str(date_to), "status": status,
-            "limit": min(200, max(1, max_events)),
+            "limit": 200 if max_events is None else min(200, max(1, max_events)),
         }
         if league_id is not None:
             params["league_id"] = league_id
         offset = 0
         found: list[dict[str, Any]] = []
-        while len(found) < max_events:
+        seen_ids: set[str] = set()
+        seen_page_signatures = set()
+        while max_events is None or len(found) < max_events:
             params["offset"] = offset
             page = self.client.get("/events/", params=params, ttl_seconds=30)
             page_records = records(page, "results")
-            found.extend(page_records)
-            if not isinstance(page, dict) or not page.get("next") or not page_records:
+            if not page_records:
                 break
+            for event in page_records:
+                event_id = event.get("id")
+                if event_id is None or str(event_id) not in seen_ids:
+                    found.append(event)
+                    if event_id is not None:
+                        seen_ids.add(str(event_id))
+            if not isinstance(page, dict) or not page.get("next"):
+                break
+            page_signature = tuple(
+                str(event.get("id")) if event.get("id") is not None else repr(event)
+                for event in page_records
+            )
+            if page_signature in seen_page_signatures:
+                break
+            seen_page_signatures.add(page_signature)
             offset += len(page_records)
-        return found[:max_events]
+        return found if max_events is None else found[:max_events]
 
     def event_stats(self, event_id: int) -> dict[str, Any]:
         result = self.client.get(f"/events/{int(event_id)}/stats/", ttl_seconds=3600)

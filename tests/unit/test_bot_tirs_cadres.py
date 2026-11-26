@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 import pytest
 
 from bot_tirs_cadres.analysis.metrics import build_report_rows
+from bot_tirs_cadres.api.bzzoiro import BzzoiroAPI
 from bot_tirs_cadres.api.client import APIResponseError, BzzoiroHTTPClient, DailyQuotaExceeded
+from bot_tirs_cadres.collectors.collector import _all_events
 from bot_tirs_cadres.config import AppConfig, load_config
 from bot_tirs_cadres.storage.database import SQLiteStore
 
@@ -196,3 +199,47 @@ def test_referee_recent_frequency_and_profile_average(tmp_path):
     assert recent["observations"] == 2
     assert career["mean"] == 4.3
     assert career["observations"] == 100
+
+
+def test_bzzoiro_api_paginates_beyond_the_old_default_cap():
+    class PagedClient:
+        def __init__(self):
+            self.offsets = []
+
+        def get(self, path, *, params, ttl_seconds):
+            offset = params["offset"]
+            self.offsets.append(offset)
+            end = min(offset + 200, 501)
+            next_page = "more" if end < 501 else None
+            return {
+                "results": [{"id": event_id} for event_id in range(offset, end)],
+                "next": next_page,
+            }
+
+    client = PagedClient()
+    api = BzzoiroAPI(client)
+    events = api.list_events(
+        date_from=date(2026, 11, 26), date_to=date(2026, 11, 26), status="upcoming"
+    )
+    assert len(events) == 501
+    assert client.offsets == [0, 200, 400]
+
+
+def test_upcoming_collection_is_unbounded_but_history_keeps_its_configured_limit():
+    class RecordingAPI:
+        def __init__(self):
+            self.calls = []
+
+        def list_events(self, **kwargs):
+            self.calls.append(kwargs)
+            return [{"id": 10}]
+
+    api = RecordingAPI()
+    config = AppConfig(max_history_matches=1, league_ids=(12, 13))
+    upcoming = _all_events(api, date(2026, 11, 26), date(2026, 11, 27), "upcoming", config)
+    assert len(upcoming) == 1
+    assert all("max_events" not in call for call in api.calls)
+
+    api.calls.clear()
+    _all_events(api, date(2026, 11, 1), date(2026, 11, 26), "finished", config)
+    assert [call["max_events"] for call in api.calls] == [1, 1]

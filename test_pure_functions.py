@@ -393,6 +393,40 @@ class DailyEventsTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertTrue(all("date_from=2026-11-26&date_to=2026-11-26" in url for url in calls))
 
+    def test_fetches_next_pages_beyond_two_hundred_matches(self):
+        with patch.dict(os.environ, {"BZZOIRO_TOKEN": "test-token", "DRY_RUN": "1"}, clear=False):
+            bzzoiro = importlib.import_module("test_bzzoiro")
+        calls = []
+
+        class Response:
+            status_code = 200
+
+            def __init__(self, results, next_page=None):
+                self.results = results
+                self.next_page = next_page
+
+            def json(self):
+                return {"results": self.results, "next": self.next_page}
+
+        def fake_get(url, **kwargs):
+            calls.append(url)
+            if "league_id=1" in url and "offset=0" in url:
+                return Response([{"id": index} for index in range(200)], next_page="more")
+            if "league_id=1" in url and "offset=200" in url:
+                return Response([{"id": 199}], next_page="more")
+            if "league_id=1" in url and "offset=201" in url:
+                return Response([{"id": 200}])
+            return Response([{"id": 300}])
+
+        with patch.object(bzzoiro.requests, "get", side_effect=fake_get):
+            payload, error = bzzoiro.get_daily_events(
+                "2026-11-26", league_ids=["1", "2"]
+            )
+        self.assertIsNone(error)
+        self.assertEqual(len(payload["results"]), 202)
+        self.assertEqual(len(calls), 4)
+        self.assertTrue(any("offset=201" in url for url in calls))
+
 
 class BacktestProfileTests(unittest.TestCase):
     def test_last_official_starters_handles_null_lineup_payload(self):
