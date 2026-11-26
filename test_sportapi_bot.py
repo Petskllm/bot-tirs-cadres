@@ -12,7 +12,7 @@ class SportAPIBotModeTests(unittest.TestCase):
         return {"id": 75, "status": "Scheduled", "league_id": 1,
                 "home_id": 21, "away_id": 22, "home_team": "Home", "away_team": "Away"}
 
-    def test_dry_run_only_reports_three_supported_markets_without_side_effects(self):
+    def test_dry_run_hides_unavailable_team_sot_market_without_side_effects(self):
         match = {"id": 55, "status": "Scheduled", "league_id": 1,
                  "home_id": 11, "away_id": 12, "home_team": "Home", "away_team": "Away",
                  "kickoff_utc": "2026-11-26T18:00:00Z"}
@@ -39,7 +39,8 @@ class SportAPIBotModeTests(unittest.TestCase):
         send.assert_not_called()
         text = output.getvalue()
         self.assertIn("TIRS TOTAUX", text)
-        self.assertIn("TIRS CADRÉS ÉQUIPE", text)
+        self.assertNotIn("TIRS CADRÉS ÉQUIPE", text)
+        self.assertIn("Marchés: tirs totaux, cartons jaunes.", text)
         self.assertIn("CARTONS", text)
         self.assertNotIn("CORNERS", text)
         self.assertNotIn("TIRS CADRÉS JOUEUR", text)
@@ -118,6 +119,35 @@ class SportAPIBotModeTests(unittest.TestCase):
         reports.assert_not_called()
         send.assert_not_called()
         self.assertIn("Aucune sélection : aucun enregistrement ni message Telegram envoyé", output.getvalue())
+
+    def test_live_run_records_sends_then_settles_prior_predictions(self):
+        match = self.live_match()
+        profile = {
+            "total_shots": {"average": 16, "variance": 2, "samples": 10},
+            "shots_on_target": {"average": 5, "variance": 1, "samples": 10},
+        }
+        output = io.StringIO()
+        events = []
+        usage = {"requests": 10, "limit": 500, "limit_reached": False, "daily_remaining": 100}
+        with patch.object(bot, "API_KEY", "test-key"), patch.object(bot, "DRY_RUN", False), \
+             patch.object(bot, "TRACK_ONLY", False), patch.object(bot, "SOURCE_FALLBACK_ENABLED", False), \
+             patch.object(bot, "request_usage", return_value=usage), \
+             patch.object(bot, "sportapi_today", return_value="2026-11-26"), \
+             patch.object(bot, "fixtures_on_date", return_value=[match]), \
+             patch.object(bot, "_league_map", return_value={1: "premier league"}), \
+             patch.object(bot, "load_models", return_value={}), \
+             patch.object(bot, "get_team_shot_profile", return_value=profile), \
+             patch.object(bot, "get_team_card_profile", return_value={}), \
+             patch.object(bot, "line_probabilities", return_value=(0.75, 0.25)), \
+             patch.object(bot, "record_predictions", side_effect=lambda *_: events.append("record") or 2), \
+             patch.object(bot, "build_reports", return_value={"settled_predictions": 3}), \
+             patch.object(bot, "_send_telegram", side_effect=lambda *_: events.append("send")), \
+             patch.object(bot, "settle_pending", side_effect=lambda **_: events.append("settle") or 1), \
+             patch.dict("os.environ", {"TELEGRAM_TOKEN": "test", "CHAT_ID": "test"}), \
+             contextlib.redirect_stdout(output):
+            bot.main()
+        self.assertEqual(events, ["record", "send", "settle"])
+        self.assertIn("Pronostics antérieurs réglés après l’envoi : 1", output.getvalue())
 
 
 if __name__ == "__main__":

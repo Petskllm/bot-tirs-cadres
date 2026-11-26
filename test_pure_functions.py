@@ -71,6 +71,48 @@ class TrackingPureFunctionsTests(unittest.TestCase):
         new = _prediction_key({**base, "source": "sportapi"})
         self.assertNotEqual(old, new)
 
+    def test_record_predictions_keeps_same_pick_for_each_distinct_github_run(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            predictions = data_dir / "predictions.jsonl"
+            row = {"source": "sportapi", "event_id": 42, "market": "total_tirs",
+                   "selection": "+27", "probability": 0.72}
+            with patch.object(tracking, "DATA_DIR", data_dir), patch.object(
+                tracking, "PREDICTIONS_FILE", predictions
+            ):
+                with patch.dict(os.environ, {"GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "1"}):
+                    self.assertEqual(tracking.record_predictions([row], "sportapi-v1"), 1)
+                    self.assertEqual(tracking.record_predictions([row], "sportapi-v1"), 0)
+                with patch.dict(os.environ, {"GITHUB_RUN_ID": "101", "GITHUB_RUN_ATTEMPT": "1"}):
+                    self.assertEqual(tracking.record_predictions([row], "sportapi-v1"), 1)
+            saved = [json.loads(line) for line in predictions.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(saved), 2)
+            self.assertEqual([item["github_run_id"] for item in saved], ["100", "101"])
+
+    def test_settlement_skips_matches_that_are_not_yet_mature(self):
+        import json
+        import tempfile
+        from datetime import datetime, timedelta, timezone
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            predictions = data_dir / "predictions.jsonl"
+            kickoff = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+            predictions.write_text(json.dumps({
+                "source": "sportapi", "event_id": 501, "market": "total_tirs",
+                "kickoff": kickoff, "line": 26.5, "direction": "over", "status": "pending",
+            }) + "\n", encoding="utf-8")
+            with patch.object(tracking, "DATA_DIR", data_dir), patch.object(
+                tracking, "PREDICTIONS_FILE", predictions
+            ):
+                changed = tracking.settle_pending(
+                    sportapi_getter=lambda _: self.fail("Ne pas interroger un match récent"),
+                )
+            self.assertEqual(changed, 0)
+
     def test_sportapi_actuals_use_documented_team_fields_only(self):
         payload = {"data": {
             "home": {"shots": 13, "shots_on_target": 6, "yellow_cards": 1},

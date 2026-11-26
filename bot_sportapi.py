@@ -15,6 +15,7 @@ import sportapi_provider as sportapi
 DRY_RUN = os.getenv("DRY_RUN", "1").lower() in {"1", "true", "yes"}
 TRACK_ONLY = os.getenv("TRACK_ONLY", "0").lower() in {"1", "true", "yes"}
 SOURCE_FALLBACK_ENABLED = os.getenv("ENABLE_SOURCE_FALLBACK", "0").lower() in {"1", "true", "yes"}
+PUBLISH_TEAM_SOT = os.getenv("PUBLISH_TEAM_SOT", "0").lower() in {"1", "true", "yes"}
 MODEL_VERSION = "v2.6-sportapi-logistic-v1"
 MODEL_PATH = Path(__file__).resolve().parent / "data" / "sportapi_models.json"
 TRAINED_LEAGUES = {
@@ -259,27 +260,28 @@ def main():
                         "estimated_odds": odds, "samples": samples})
 
         h_sot, a_sot = hp.get("shots_on_target"), ap.get("shots_on_target")
-        for team_name, team_id, side, profile in ((home_name, home_id, "home", h_sot), (away_name, away_id, "away", a_sot)):
-            sot_model = models.get("tirs_cadres_equipe") if league_code else None
-            if profile and sot_model:
-                team_form = home_form if side == "home" else away_form
-                opponent_form = away_form if side == "home" else home_form
-                features = _market_features("tirs_cadres_equipe", league_code, home_form, away_form,
-                                             team_form=team_form, opponent_form=opponent_form)
-                model_p = model_probability(sot_model, features)
-                selection = (3.5, model_p) if profile["average"] < 12 and model_p >= 0.65 else None
-            else:
-                selection = select_team_sot(profile, line_probabilities) if profile else None
-            if selection:
-                line, probability = selection
-                odds = round(1 / probability * 1.04, 2)
-                picks_sot.append(f"🎯 {title}\n  • {team_name} +{line} tirs cadrés : {probability:.0%} (Cote min : {odds})")
-                predictions.append({"event_id": fid, "source": source, "kickoff": kickoff,
-                    "match": title, "market": "tirs_cadres_equipe", "selection": f"{team_name} +{line}",
-                    "line": line, "direction": "over", "probability": probability,
-                    "estimated_odds": odds, "team_id": team_id, "side": side,
-                    "samples": profile["samples"], "expected_mean": profile["average"],
-                    "expected_variance": profile["variance"]})
+        if PUBLISH_TEAM_SOT:
+            for team_name, team_id, side, profile in ((home_name, home_id, "home", h_sot), (away_name, away_id, "away", a_sot)):
+                sot_model = models.get("tirs_cadres_equipe") if league_code else None
+                if profile and sot_model:
+                    team_form = home_form if side == "home" else away_form
+                    opponent_form = away_form if side == "home" else home_form
+                    features = _market_features("tirs_cadres_equipe", league_code, home_form, away_form,
+                                                 team_form=team_form, opponent_form=opponent_form)
+                    model_p = model_probability(sot_model, features)
+                    selection = (3.5, model_p) if profile["average"] < 12 and model_p >= 0.65 else None
+                else:
+                    selection = select_team_sot(profile, line_probabilities) if profile else None
+                if selection:
+                    line, probability = selection
+                    odds = round(1 / probability * 1.04, 2)
+                    picks_sot.append(f"🎯 {title}\n  • {team_name} +{line} tirs cadrés : {probability:.0%} (Cote min : {odds})")
+                    predictions.append({"event_id": fid, "source": source, "kickoff": kickoff,
+                        "match": title, "market": "tirs_cadres_equipe", "selection": f"{team_name} +{line}",
+                        "line": line, "direction": "over", "probability": probability,
+                        "estimated_odds": odds, "team_id": team_id, "side": side,
+                        "samples": profile["samples"], "expected_mean": profile["average"],
+                        "expected_variance": profile["variance"]})
 
         if use_api_football:
             hc = api_football.get_team_card_profile(home_id, "home", league_id, today, season)
@@ -316,9 +318,12 @@ def main():
     )
 
     provider_label = "API-FOOTBALL — SECOURS" if use_api_football else "SPORTAPI"
+    published_markets = "tirs totaux, cartons jaunes"
+    if PUBLISH_TEAM_SOT:
+        published_markets = "tirs totaux, tirs cadrés par équipe, cartons jaunes"
     lines = [f"PRONOSTICS {provider_label} — {datetime.now().strftime('%d/%m/%Y')}",
              f"Matchs analysés: {analyzed} | autres ligues ignorées: {ignored}",
-             "Marchés: tirs totaux, tirs cadrés par équipe, cartons jaunes.", ""]
+             f"Marchés: {published_markets}.", ""]
     for heading, rows in (("TIRS TOTAUX", picks_total), ("TIRS CADRÉS ÉQUIPE", picks_sot), ("CARTONS", picks_cards)):
         if rows:
             lines.extend([heading + ":", "\n\n".join(rows), ""])
@@ -365,6 +370,13 @@ def main():
         return
     _send_telegram(message)
     print("Message Telegram envoyé.")
+    settled = settle_pending(
+        sportapi_getter=None if use_api_football else api_get,
+        api_football_getter=api_football.actuals_for_fixture if use_api_football else None,
+    )
+    if settled:
+        report = build_reports()
+        print(f"Pronostics antérieurs réglés après l’envoi : {settled}; total réglé suivi : {report.get('settled_predictions', 0)}")
 
 if __name__ == "__main__":
     main()

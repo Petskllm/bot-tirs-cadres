@@ -94,6 +94,7 @@ class CascadeHandoffTests(unittest.TestCase):
 
     def test_bzzoiro_filter_contains_only_top_five_and_two_uefa_cups(self):
         bot = self.bzz_module()
+        self.assertFalse(bot.PUBLISH_TEAM_SOT)
         self.assertEqual(bot.LIGUES_AUTORISEES, {
             "premier league", "english premier league", "la liga", "laliga", "spanish la liga",
             "serie a", "italian serie a", "bundesliga", "german bundesliga", "ligue 1", "french ligue 1",

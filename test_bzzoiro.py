@@ -32,6 +32,7 @@ DRY_RUN = os.getenv("DRY_RUN", "1").lower() in {"1", "true", "yes"}
 TRACK_ONLY = os.getenv("TRACK_ONLY", "0").lower() in {"1", "true", "yes"}
 API_FOOTBALL_DIAGNOSTIC = os.getenv("API_FOOTBALL_DIAGNOSTIC", "0").lower() in {"1", "true", "yes"}
 SOURCE_FALLBACK_ENABLED = os.getenv("ENABLE_SOURCE_FALLBACK", "0").lower() in {"1", "true", "yes"}
+PUBLISH_TEAM_SOT = os.getenv("PUBLISH_TEAM_SOT", "0").lower() in {"1", "true", "yes"}
 BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
 MODEL_VERSION = "v2.7-last-lineup-all-markets"
@@ -774,7 +775,7 @@ def main():
         # ============================================
         # 2. TIRS CADRÉS ÉQUIPES (D/E)
         # ============================================
-        if h_profile.get("shots_on_target") and a_profile.get("shots_on_target"):
+        if PUBLISH_TEAM_SOT and h_profile.get("shots_on_target") and a_profile.get("shots_on_target"):
             for team, profile, side in [
                 (home_name, h_profile["shots_on_target"], "home"),
                 (away_name, a_profile["shots_on_target"], "away"),

@@ -6,7 +6,7 @@ import math
 import os
 import tempfile
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -50,12 +50,13 @@ def _write_json(path, value):
 def _prediction_key(row):
     return "|".join(
         str(row.get(field, ""))
-        for field in ("source", "event_id", "market", "selection", "team_id", "player_id", "model_version")
+        for field in ("source", "event_id", "market", "selection", "team_id", "player_id",
+                      "model_version", "github_run_id", "github_run_attempt")
     )
 
 
 def record_predictions(rows, model_version):
-    """Ajoute uniquement les nouvelles sélections; ne fait rien pour DRY_RUN."""
+    """Enregistre les sélections et distingue les répétitions envoyées lors de runs différents."""
     if not rows:
         return 0
     existing = _read_jsonl(PREDICTIONS_FILE)
@@ -66,6 +67,9 @@ def record_predictions(rows, model_version):
         for row in rows:
             row = dict(row)
             row.setdefault("model_version", model_version)
+            if os.getenv("GITHUB_RUN_ID"):
+                row.setdefault("github_run_id", os.environ["GITHUB_RUN_ID"])
+                row.setdefault("github_run_attempt", os.getenv("GITHUB_RUN_ATTEMPT", "1"))
             row.setdefault("status", "pending")
             row.setdefault("created_at", now_iso())
             key = _prediction_key(row)
@@ -160,9 +164,20 @@ def settle_pending(getter=None, sportapi_getter=None, api_football_getter=None):
     """Règle les lignes uniquement avec leur fournisseur d'origine."""
     rows = _read_jsonl(PREDICTIONS_FILE)
     changed = 0
+    maturity_cutoff = datetime.now(timezone.utc) - timedelta(hours=3)
     for row in rows:
         if row.get("status") != "pending":
             continue
+        kickoff = row.get("kickoff")
+        if kickoff:
+            try:
+                kickoff_at = datetime.fromisoformat(str(kickoff).replace("Z", "+00:00"))
+                if kickoff_at.tzinfo is None:
+                    kickoff_at = kickoff_at.replace(tzinfo=timezone.utc)
+                if kickoff_at > maturity_cutoff:
+                    continue
+            except ValueError:
+                pass
         source = row.get("source")
         # Les lignes v2.4 sont les archives du script Bzzoiro antérieur au
         # champ `source`; ne pas inférer la provenance des autres versions.
