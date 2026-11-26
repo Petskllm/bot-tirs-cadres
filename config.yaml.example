@@ -1,0 +1,32 @@
+api:
+  base_url: https://sports.bzzoiro.com/api/v2/
+  token_env: BZZOIRO_TOKEN
+  timeout_seconds: 20
+  daily_request_limit: 7500
+  # 20 laisse une marge sous la limite publique de 25 req/s par IP.
+  burst_requests_per_second: 20
+  max_retries: 3
+  max_backoff_seconds: 30
+
+storage:
+  sqlite_path: data/bot_tirs_cadres.sqlite3
+  cache_ttl_seconds: 300
+
+collection:
+  future_days: 7
+  history_days: 30
+  max_history_matches: 200
+  max_player_ids_per_run: 50
+  # Laisser vide pour toutes les ligues couvertes; sinon indiquer des identifiants numériques Bzzoiro.
+  league_ids: []
+  # Optionnel : identifiants de joueurs à surveiller en priorité.
+  player_ids: []
+
+analysis:
+  last_matches: 10
+  player_shots_on_target_thresholds: [0.5, 1.5]
+  team_total_shots_threshold: 27
+  total_cards_threshold: 4.5
+
+report:
+  csv_path: reports/football_analysis.csv

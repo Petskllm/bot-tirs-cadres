@@ -82,3 +82,40 @@ une seule requête de fixtures par exécution.
 Les réponses API sont mises en cache pendant l'exécution afin d'éviter de redemander plusieurs fois les mêmes événements et statistiques. Le modèle des tirs utilise les moyennes pondérées des dix derniers matchs disponibles, séparées domicile/extérieur, ainsi que la variance historique des tirs. Il utilise une approximation normale lorsque l'échantillon est suffisant et revient à Poisson avec peu de données. Les champs `total_shots`, `shots_on_target`, `shots_off_target`, `blocked_shots`, `hit_woodwork` et `xg` sont lus lorsqu'ils sont disponibles ; `xg` reste une information complémentaire et n'est pas converti artificiellement en nombre de tirs. Les absences offensives explicitement identifiées par `availability` sont prises en compte avec une correction plafonnée, tandis qu'une absence sans poste connu est ignorée pour éviter de pénaliser à tort une équipe.
 
 Une calibration empirique par championnat, équipe et cotes réelles nécessitera encore un historique de résultats. Les seuils de confiance doivent donc être réévalués après plusieurs dizaines de matchs résolus. Les lignes corners, cartons et tirs cadrés utilisent maintenant le même profil pondéré et la même gestion de variance que les tirs totaux.
+
+
+## Nouveau socle Python modulaire
+
+Le paquet `src/bot_tirs_cadres` ajoute un flux de collecte séparé des scripts historiques. Il utilise SQLite pour le cache HTTP, les matchs, statistiques brutes, tirs, incidents, joueurs et profils d'arbitres. La clé reste hors du dépôt : `BZZOIRO_TOKEN` est lue depuis l'environnement. Une configuration de départ se trouve dans `config.yaml.example`.
+
+La documentation Bzzoiro indique un quota football de 7 500 appels par jour, réinitialisé à minuit UTC, et un plafond de 25 requêtes/s sur certains endpoints d'événements. Le client applique une limite conservatrice configurable de 20 req/s, comptabilise les appels réseau localement, réutilise le cache et traite `Retry-After`. Lorsqu'une réponse `429` signale l'épuisement du quota journalier, le programme s'arrête sans attendre jusqu'au lendemain. Le compteur local est une protection supplémentaire : les en-têtes `RateLimit` du serveur restent la source d'autorité.
+
+> Attention : la référence officielle expose les moyennes globales de cartons dans le profil arbitre (`/api/v2/referees/{id}/`). La route `/matches/` renvoie le journal des matchs; le paquet estime les fréquences récentes de cartons à partir des incidents archivés. Ce n'est pas une probabilité prédictive calibrée. Le CSV donne les observations, la moyenne et la fréquence empirique de dépassement; il ne fournit ni cotes de bookmaker ni garantie de rentabilité. Les cotes de cartons ne sont pas nécessaires à cette collecte.
+
+### Installation et commandes
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+cp config.yaml.example config.yaml
+export BZZOIRO_TOKEN="votre_jeton"
+PYTHONPATH=src python -m bot_tirs_cadres coverage
+PYTHONPATH=src python -m bot_tirs_cadres collect
+PYTHONPATH=src python -m bot_tirs_cadres report
+PYTHONPATH=src python -m bot_tirs_cadres run
+```
+
+`coverage` ne requiert pas de jeton. `collect` récupère les matchs futurs sur l'horizon configuré, puis les statistiques/incidents des matchs terminés sur la période historique configurée. Les appels joueurs sont bornés par `max_player_ids_per_run`; les identifiants `player_ids` configurés sont prioritaires. Pour limiter les appels aux ligues suivies, renseigne `league_ids` dans `config.yaml`. `report` écrit `reports/football_analysis.csv` par défaut; le chemin peut être remplacé par `--csv chemin.csv`.
+
+### Tests
+
+Les tests du nouveau paquet n'appellent pas l'API :
+
+```bash
+PYTHONPATH=src pytest -q tests/unit
+```
+
+Les scripts et tests historiques à la racine du dépôt restent inchangés. Le nouveau paquet est volontairement ajouté en parallèle afin de permettre une migration progressive.
+
+Références utilisées pour les routes et limites : [conventions et quotas Bzzoiro](https://sports.bzzoiro.com/docs/conventions/), [événements, statistiques et incidents](https://sports.bzzoiro.com/docs/football/events/), [statistiques joueurs](https://sports.bzzoiro.com/docs/football/teams-players/) et [arbitres](https://sports.bzzoiro.com/docs/football/managers-referees-venues/).
