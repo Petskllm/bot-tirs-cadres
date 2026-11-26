@@ -1,15 +1,15 @@
-name: SportAPI quota-capped dry-run
+name: SportAPI quota-aware dry-run
 on:
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: sportapi-quota-capped-dry-run
+  group: sportapi-quota-aware-dry-run
   cancel-in-progress: false
 jobs:
   dry-run:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 360
     steps:
       - name: Récupérer le dépôt
         uses: actions/checkout@v4
@@ -25,7 +25,7 @@ jobs:
         env:
           SPORTAPI_KEY: ${{ secrets.SPORTAPI_KEY }}
         run: python sportapi_dry_run_preflight.py
-      - name: Exécuter le bot en dry-run borné
+      - name: Exécuter le bot en dry-run avec le quota restant
         env:
           SPORTAPI_KEY: ${{ secrets.SPORTAPI_KEY }}
           DRY_RUN: "true"

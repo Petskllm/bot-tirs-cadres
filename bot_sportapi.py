@@ -1,6 +1,6 @@
 """Bot de pronostics SportAPI.ai: tirs, tirs cadrés équipe et cartons uniquement."""
 from __future__ import annotations
-import json, math, os, time
+import json, math, os
 from datetime import datetime, timezone
 from pathlib import Path
 import requests
@@ -17,18 +17,21 @@ TRACK_ONLY = os.getenv("TRACK_ONLY", "0").lower() in {"1", "true", "yes"}
 SOURCE_FALLBACK_ENABLED = os.getenv("ENABLE_SOURCE_FALLBACK", "0").lower() in {"1", "true", "yes"}
 MODEL_VERSION = "v2.6-sportapi-logistic-v1"
 MODEL_PATH = Path(__file__).resolve().parent / "data" / "sportapi_models.json"
-TRAINED_LEAGUES = {"premier league":"E0", "la liga":"SP1", "laliga":"SP1",
-                   "bundesliga":"D1", "serie a":"I1", "ligue 1":"F1"}
+TRAINED_LEAGUES = {
+    "premier league":"E0", "english premier league":"E0",
+    "la liga":"SP1", "laliga":"SP1", "spanish la liga":"SP1",
+    "bundesliga":"D1", "german bundesliga":"D1",
+    "serie a":"I1", "italian serie a":"I1",
+    "ligue 1":"F1", "french ligue 1":"F1",
+}
 CARDS_MIN_PROB, CARDS_MIN_SAMPLES, CARDS_MIN_EXPECTED = 0.65, 6, 4.5
 ALLOWED_LEAGUES = {
-    "premier league", "la liga", "laliga", "serie a", "bundesliga", "ligue 1",
+    "premier league", "english premier league",
+    "la liga", "laliga", "spanish la liga",
+    "serie a", "italian serie a", "bundesliga", "german bundesliga",
+    "ligue 1", "french ligue 1",
     "champions league", "uefa champions league",
     "europa league", "uefa europa league",
-    "conference league", "uefa conference league", "europa conference league",
-    "uefa europa conference league",
-    "eredivisie", "dutch eredivisie",
-    "championship", "efl championship", "english championship",
-    "süper lig", "super lig", "turkish süper lig", "turkish super lig",
 }
 
 
@@ -200,8 +203,6 @@ def main():
     picks_total, picks_sot, picks_cards = [], [], []
     predictions = []
     analyzed = ignored = 0
-    started = time.monotonic()
-
     for match in matches:
         if str(match.get("status", "")).lower() != "scheduled":
             continue
@@ -310,23 +311,8 @@ def main():
                         "direction": "over", "probability": probability, "estimated_odds": odds,
                         "samples": card_samples, "expected_mean": total_cards,
                         "fouls_context": total_fouls})
-        if time.monotonic() - started > 280:
-            break
-
-    eligible_count = sum(
-        1 for match in matches
-        if str(match.get("status", "")).lower() == "scheduled"
-        and is_allowed_league(
-            match.get("league_name") if use_api_football else leagues.get(
-                match.get("league_id"), match.get("league_name", "")
-            )
-        )
-    )
     incomplete = (
-        (analyzed < eligible_count and time.monotonic() - started > 280)
-        or (not use_api_football and bool(sportapi.COLLECTION_ERRORS))
-        or (not use_api_football and sportapi.DAILY_REMAINING is not None
-            and sportapi.DAILY_REMAINING <= 0)
+        (not use_api_football and bool(sportapi.COLLECTION_ERRORS))
     )
 
     provider_label = "API-FOOTBALL — SECOURS" if use_api_football else "SPORTAPI"
@@ -346,16 +332,12 @@ def main():
     else:
         _print_api_usage()
         usage = request_usage()
-        budget_exhausted = usage["limit_reached"] or (
-            usage["limit"] is not None and usage["requests"] >= usage["limit"]
-        )
+        budget_exhausted = usage["limit_reached"]
     if budget_exhausted or incomplete:
         if budget_exhausted:
             reason = "budget de requêtes atteint"
         elif not use_api_football and sportapi.COLLECTION_ERRORS:
             reason = "erreur(s) de collecte: " + "; ".join(sportapi.COLLECTION_ERRORS[:3])
-        elif not use_api_football and sportapi.DAILY_REMAINING is not None and sportapi.DAILY_REMAINING <= 0:
-            reason = "quota journalier épuisé"
         else:
             reason = "fenêtre d’analyse interrompue"
         print(f"Analyse {source} incomplète ({reason}); aucune prédiction conservée ni aucun message Telegram envoyé.")

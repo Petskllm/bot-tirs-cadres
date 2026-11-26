@@ -64,7 +64,7 @@ class ProviderDiagnosticsTests(unittest.TestCase):
         self.assertTrue(provider.COLLECTION_ERRORS)
         self.assertNotIn("private-body-value", repr(provider.COLLECTION_ERRORS))
 
-    def test_sportapi_daily_quota_zero_on_response_marks_request_budget_exhausted(self):
+    def test_sportapi_allows_last_quota_response_but_blocks_any_additional_get(self):
         provider = importlib.import_module("sportapi_provider")
         class Response:
             status_code = 200
@@ -77,9 +77,13 @@ class ProviderDiagnosticsTests(unittest.TestCase):
              patch.object(provider, "REQUEST_LIMIT", 100), \
              patch.object(provider, "REQUEST_LIMIT_REACHED", False), \
              patch.object(provider, "DAILY_REMAINING", None), \
-             patch.object(provider.requests, "get", return_value=Response()):
+             patch.object(provider.requests, "get", return_value=Response()) as get:
             self.assertEqual(provider.api_get("leagues"), {"success": True, "data": []})
+            self.assertFalse(provider.REQUEST_LIMIT_REACHED)
+            self.assertIsNone(provider.api_get("fixtures/date/2026-11-26"))
             self.assertTrue(provider.REQUEST_LIMIT_REACHED)
+            self.assertEqual(get.call_count, 1)
+            self.assertTrue(provider.COLLECTION_ERRORS)
 
 
 class CascadeHandoffTests(unittest.TestCase):
@@ -87,6 +91,14 @@ class CascadeHandoffTests(unittest.TestCase):
     def bzz_module():
         with patch.dict(os.environ, {"BZZOIRO_TOKEN": "offline-test", "DRY_RUN": "1"}, clear=False):
             return importlib.import_module("test_bzzoiro")
+
+    def test_bzzoiro_filter_contains_only_top_five_and_two_uefa_cups(self):
+        bot = self.bzz_module()
+        self.assertEqual(bot.LIGUES_AUTORISEES, {
+            "premier league", "english premier league", "la liga", "laliga", "spanish la liga",
+            "serie a", "italian serie a", "bundesliga", "german bundesliga", "ligue 1", "french ligue 1",
+            "champions league", "uefa champions league", "europa league", "uefa europa league",
+        })
 
     def test_partial_bzzoiro_response_is_not_published_and_marks_source_unusable(self):
         bot = self.bzz_module()

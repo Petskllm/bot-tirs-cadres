@@ -34,14 +34,15 @@ def remaining_from_headers(headers, names):
 
 
 def choose_budget(daily_remaining, monthly_remaining=None):
-    """Garde 20 requêtes de marge; plafond dur du bot: 100 GET."""
+    """Autorise tout le quota journalier/mensuel annoncé comme restant."""
     if daily_remaining is None:
-        raise ValueError("SportAPI n'a pas fourni d'en-tête de quota journalier; arrêt par sécurité.")
-    if daily_remaining < 40:
-        raise ValueError(f"Quota journalier restant insuffisant ({daily_remaining}); minimum requis pour réserver 20 GET et lancer un dry-run: 40.")
-    if monthly_remaining is not None and monthly_remaining < 40:
-        raise ValueError(f"Quota mensuel restant insuffisant ({monthly_remaining}); minimum requis pour réserver 20 GET et lancer un dry-run: 40.")
-    return min(100, daily_remaining - 20)
+        raise ValueError("SportAPI n'a pas fourni le quota journalier restant.")
+    if daily_remaining <= 0:
+        raise ValueError("Le quota journalier SportAPI est épuisé.")
+    if monthly_remaining is not None and monthly_remaining <= 0:
+        raise ValueError("Le quota mensuel SportAPI est épuisé.")
+    available = min(daily_remaining, monthly_remaining) if monthly_remaining is not None else daily_remaining
+    return available
 
 
 def main():
@@ -73,7 +74,7 @@ def main():
     except ValueError as exc:
         raise SystemExit(f"{exc} Un seul GET de contrôle a été effectué; bot non lancé.") from None
 
-    print(f"Préflight accepté: quota quotidien restant après contrôle={daily}; quota mensuel={monthly}; plafond bot={budget} GET; marge minimale conservée=20.")
+    print(f"Préflight accepté: quota quotidien restant après contrôle={daily}; quota mensuel={monthly}; appels autorisés pour ce run={budget} GET (sans plafond inférieur artificiel).")
     github_env = os.getenv("GITHUB_ENV")
     if github_env:
         with open(github_env, "a", encoding="utf-8") as handle:

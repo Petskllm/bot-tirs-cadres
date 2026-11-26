@@ -29,7 +29,7 @@ concurrency:
 jobs:
   run-bzzoiro:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 360
     steps:
       - name: Récupérer le code
         uses: actions/checkout@v4

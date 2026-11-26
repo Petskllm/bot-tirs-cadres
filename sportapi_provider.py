@@ -61,7 +61,7 @@ def api_get(path, attempts=2):
     for attempt in range(attempts):
         if REQUEST_LIMIT and REQUEST_COUNT >= REQUEST_LIMIT:
             REQUEST_LIMIT_REACHED = True
-            _record_error(f"plafond local atteint ({REQUEST_LIMIT} GET)")
+            _record_error(f"quota SportAPI annoncé avant le run entièrement utilisé ({REQUEST_LIMIT} GET)")
             return None
         if DAILY_REMAINING is not None and DAILY_REMAINING <= 0:
             REQUEST_LIMIT_REACHED = True
@@ -74,8 +74,6 @@ def api_get(path, attempts=2):
             remaining = _remaining_daily(r.headers)
             if remaining is not None:
                 DAILY_REMAINING = remaining
-                if remaining <= 0:
-                    REQUEST_LIMIT_REACHED = True
             elif DAILY_REMAINING is not None:
                 DAILY_REMAINING = max(0, DAILY_REMAINING - 1)
             if r.status_code == 200:

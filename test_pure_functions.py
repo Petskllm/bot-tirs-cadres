@@ -577,12 +577,13 @@ class SportAPIModelInferenceTests(unittest.TestCase):
         self.assertEqual(sum(flags.values()), 1.0)
 
     def test_allowed_competitions_prioritize_major_leagues_and_uefa_cups(self):
-        for name in ("Premier League", "UEFA Champions League", "Europa League",
-                     "UEFA Conference League", "Ligue 1", "Süper Lig", "Turkish Super Lig",
-                     "Eredivisie", "EFL Championship"):
+        for name in ("Premier League", "La Liga", "Serie A", "Bundesliga", "Ligue 1",
+                     "UEFA Champions League", "Europa League", "UEFA Europa League"):
             with self.subTest(name=name):
                 self.assertTrue(bot_sportapi.is_allowed_league(name))
-        for name in ("Primeira Liga", "Ligue 2", "Serie B", "League One"):
+        for name in ("UEFA Conference League", "Süper Lig", "Turkish Super Lig",
+                     "Eredivisie", "EFL Championship", "Primeira Liga", "Ligue 2",
+                     "Serie B", "League One"):
             with self.subTest(name=name):
                 self.assertFalse(bot_sportapi.is_allowed_league(name))
 

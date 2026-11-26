@@ -47,11 +47,11 @@ if (not TOKEN and not API_FOOTBALL_DIAGNOSTIC and not SOURCE_FALLBACK_ENABLED) o
     exit(1)
 
 # --- FILTRE DES CHAMPIONNATS ---
-LIGUES_AUTORISEES = [
-    "premier league", "la liga", "laliga", "serie a", "bundesliga", "ligue 1",
-    "champions league", "europa league", "conference league",
-    "eredivisie", "primeira liga", "championship", "brasileirao", "ligue 2", "serie b", "la liga 2"
-]
+LIGUES_AUTORISEES = {
+    "premier league", "english premier league", "la liga", "laliga", "spanish la liga",
+    "serie a", "italian serie a", "bundesliga", "german bundesliga", "ligue 1", "french ligue 1",
+    "champions league", "uefa champions league", "europa league", "uefa europa league",
+}
 
 @lru_cache(maxsize=512)
 def api_get(endpoint):
