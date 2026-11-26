@@ -11,6 +11,7 @@ import unicodedata
 from datetime import datetime, timezone
 
 import requests
+from provider_diagnostics import summarize_http_error
 
 BASE_URL = "https://v3.football.api-sports.io"
 
@@ -29,10 +30,24 @@ def _api_get(path, params, token):
         headers={"x-apisports-key": token, "Accept": "application/json"},
         timeout=15,
     )
-    response.raise_for_status()
-    payload = response.json()
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if response.status_code != 200:
+        raise RuntimeError(summarize_http_error(
+            "API-Football", response.status_code, response.headers,
+            payload=payload, text=getattr(response, "text", ""),
+        ))
+    if not isinstance(payload, dict):
+        raise RuntimeError(summarize_http_error(
+            "API-Football", response.status_code, response.headers,
+            payload=payload, text=getattr(response, "text", ""),
+        ))
     if payload.get("errors"):
-        raise RuntimeError(str(payload["errors"]))
+        raise RuntimeError(summarize_http_error(
+            "API-Football", response.status_code, response.headers, payload=payload,
+        ))
     return payload
 
 

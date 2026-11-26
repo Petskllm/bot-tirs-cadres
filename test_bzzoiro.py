@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from tracking import build_reports, record_predictions, settle_pending
 from api_football_validation import diagnose_api_football, format_report, validate_matches
 from bot_modes import should_persist_results, should_send_telegram
+from provider_diagnostics import retry_after_seconds, summarize_http_error
+from workflow_outputs import set_github_output
 from model_rules import (
     BZZOIRO_TEAM_SOT_MIN_SAMPLES,
     cards_market_key,
@@ -29,14 +31,16 @@ TG_CHAT = os.getenv("CHAT_ID")
 DRY_RUN = os.getenv("DRY_RUN", "1").lower() in {"1", "true", "yes"}
 TRACK_ONLY = os.getenv("TRACK_ONLY", "0").lower() in {"1", "true", "yes"}
 API_FOOTBALL_DIAGNOSTIC = os.getenv("API_FOOTBALL_DIAGNOSTIC", "0").lower() in {"1", "true", "yes"}
+SOURCE_FALLBACK_ENABLED = os.getenv("ENABLE_SOURCE_FALLBACK", "0").lower() in {"1", "true", "yes"}
 BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
 MODEL_VERSION = "v2.7-last-lineup-all-markets"
+DATA_COLLECTION_ERRORS = []
 
 def utc_date():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-if (not TOKEN and not API_FOOTBALL_DIAGNOSTIC) or (
+if (not TOKEN and not API_FOOTBALL_DIAGNOSTIC and not SOURCE_FALLBACK_ENABLED) or (
     not DRY_RUN and not TRACK_ONLY and not API_FOOTBALL_DIAGNOSTIC and not all([TG_TOKEN, TG_CHAT])
 ):
     print("❌ Secrets manquants")
@@ -53,8 +57,31 @@ LIGUES_AUTORISEES = [
 def api_get(endpoint):
     try:
         r = requests.get(f"{BASE}/{endpoint}", headers=headers, timeout=15)
-        return r.json() if r.status_code == 200 else None
-    except (requests.RequestException, ValueError):
+        if r.status_code != 200:
+            diagnostic = summarize_http_error('Bzzoiro', r.status_code, r.headers, text=r.text)
+            if len(DATA_COLLECTION_ERRORS) < 10:
+                DATA_COLLECTION_ERRORS.append(diagnostic)
+            print(f"⚠️ {diagnostic}")
+            return None
+        payload = r.json()
+        if not isinstance(payload, dict):
+            if len(DATA_COLLECTION_ERRORS) < 10:
+                DATA_COLLECTION_ERRORS.append("Bzzoiro réponse JSON de type inattendu")
+            return None
+        if payload.get("success") is False or payload.get("errors"):
+            diagnostic = summarize_http_error("Bzzoiro", r.status_code, r.headers, payload=payload)
+            if len(DATA_COLLECTION_ERRORS) < 10:
+                DATA_COLLECTION_ERRORS.append(diagnostic)
+            print(f"⚠️ {diagnostic}")
+            return None
+        return payload
+    except requests.RequestException as exc:
+        if len(DATA_COLLECTION_ERRORS) < 10:
+            DATA_COLLECTION_ERRORS.append(f"Bzzoiro erreur réseau ({type(exc).__name__})")
+        return None
+    except ValueError:
+        if len(DATA_COLLECTION_ERRORS) < 10:
+            DATA_COLLECTION_ERRORS.append("Bzzoiro réponse JSON invalide")
         return None
 
 
@@ -80,10 +107,20 @@ def get_daily_events(today, attempts=3, league_ids=None):
             page_payload = None
             page_records = None
             for attempt in range(1, attempts + 1):
+                retry_delay = None
+                response = None
                 try:
                     response = requests.get(f"{BASE}/{endpoint}", headers=headers, timeout=15)
                     if response.status_code != 200:
-                        last_error = f"HTTP {response.status_code}"
+                        try:
+                            error_payload = response.json()
+                        except ValueError:
+                            error_payload = None
+                        last_error = summarize_http_error(
+                            "Bzzoiro", response.status_code, response.headers,
+                            payload=error_payload, text=getattr(response, "text", ""),
+                        )
+                        retry_delay = retry_after_seconds(response.headers)
                     else:
                         page_payload = response.json()
                         results = (
@@ -98,8 +135,11 @@ def get_daily_events(today, attempts=3, league_ids=None):
                         last_error = "liste de résultats invalide"
                 except (requests.RequestException, ValueError) as exc:
                     last_error = type(exc).__name__
+                if response is not None and response.status_code == 429 and retry_delay is not None and retry_delay > 30:
+                    last_error += "; nouvel essai reporté selon Retry-After (au-delà de 30 s)"
+                    break
                 if attempt < attempts:
-                    time.sleep(2)
+                    time.sleep(max(1.0, retry_delay) if retry_delay is not None else min(8, 2 ** attempt))
 
             if last_error:
                 errors.append(f"ligue {league_id or 'globale'}, offset {offset}: {last_error}")
@@ -540,11 +580,17 @@ def main():
         print("🔬 Diagnostic API-Football uniquement : aucun Telegram, aucun pronostic")
         print(json.dumps(diagnose_api_football(utc_date()), ensure_ascii=False, indent=2))
         return
+    if SOURCE_FALLBACK_ENABLED:
+        set_github_output("has_predictions", False)
+        if not TOKEN:
+            print("Bzzoiro ignoré : BZZOIRO_TOKEN absent; passage au fournisseur suivant.")
+            return
     if should_persist_results(DRY_RUN, TRACK_ONLY):
         settled = settle_pending(api_get)
         if settled:
             print(f"✅ Pronostics réglés : {settled}")
         build_reports()
+    DATA_COLLECTION_ERRORS.clear()
     print("⏳ Récupération de la liste des ligues...")
     league_map = {}
     all_leagues = api_get("leagues/")
@@ -561,23 +607,41 @@ def main():
     events, events_error = get_daily_events(today, league_ids=approved_league_ids)
     if events_error and events and events.get("results"):
         print(f"⚠️ Réponse partielle de l'API : {events_error}")
+        print("Résultat Bzzoiro incomplet : aucun pronostic publié; passage au fournisseur suivant.")
+        return
     if not events or not events.get("results"):
+        if SOURCE_FALLBACK_ENABLED:
+            if events_error:
+                print(f"Bzzoiro indisponible ({events_error}); passage au fournisseur suivant.")
+            else:
+                print("Bzzoiro n'a renvoyé aucune fixture; passage au fournisseur suivant.")
+            return
         fallback = validate_matches([], today)
         api_count = fallback.get("api_fixtures", 0) if fallback.get("enabled") else 0
+        if not fallback.get("enabled"):
+            api_status = "API-Football non consulté (clé absente)"
+        elif fallback.get("error"):
+            api_status = f"API-Football en erreur ({fallback['error']})"
+        elif api_count == 0:
+            api_status = "API-Football a réellement renvoyé 0 fixture"
+        else:
+            api_status = f"API-Football a renvoyé {api_count} fixture(s)"
         if events_error:
             message = (
-                f"⚠️ Bzzoiro indisponible pour le {today} après 3 tentatives "
-                f"({events_error}). API-Football confirme {api_count} fixture(s). "
+                f"⚠️ Bzzoiro indisponible pour le {today} après échec des tentatives autorisées "
+                f"({events_error}). {api_status}. "
                 "Aucun pronostic généré."
             )
         elif api_count:
             message = (
                 f"⚠️ Bzzoiro n'a renvoyé aucun match pour le {today}, "
-                f"mais API-Football confirme {api_count} fixture(s). "
+                f"mais {api_status}. "
                 "Aucun pronostic généré faute de données Bzzoiro complètes."
             )
+        elif fallback.get("error") or not fallback.get("enabled"):
+            message = f"Aucune fixture Bzzoiro disponible; {api_status}. Aucun pronostic généré."
         else:
-            message = f"🤷‍♂️ Aucune fixture confirmée par les APIs pour le {today}."
+            message = f"🤷‍♂️ Aucune fixture confirmée pour le {today}; {api_status}."
         if not should_send_telegram(DRY_RUN, TRACK_ONLY):
             print("🧪 Mode sans publication Telegram actif")
             print(message)
@@ -901,6 +965,19 @@ def main():
         ("👤 TIRS CADRÉS (Joueurs) :", picks_cadres_joueurs),
     ]
     messages = build_telegram_messages(msg, sections)
+
+    if DATA_COLLECTION_ERRORS:
+        print(
+            "Collecte Bzzoiro incomplète (" + "; ".join(DATA_COLLECTION_ERRORS[:3])
+            + "); aucun pronostic publié, passage au fournisseur suivant."
+        )
+        return
+    has_predictions = bool(prediction_records)
+    if has_predictions:
+        set_github_output("has_predictions", True)
+    if SOURCE_FALLBACK_ENABLED and not has_predictions:
+        print("Bzzoiro n'a produit aucune sélection exploitable; passage au fournisseur suivant.")
+        return
 
     if not should_persist_results(DRY_RUN, TRACK_ONLY):
         print("🧪 DRY_RUN actif : aucun message Telegram envoyé")

@@ -9,9 +9,12 @@ from model_rules import select_team_sot
 from sportapi_provider import API_KEY, api_get, fixtures_on_date, get_team_card_profile, get_team_model_form, get_team_shot_profile, request_usage, sportapi_today
 import api_football_provider as api_football
 from tracking import build_reports, record_predictions, settle_pending
+from workflow_outputs import set_github_output
+import sportapi_provider as sportapi
 
 DRY_RUN = os.getenv("DRY_RUN", "1").lower() in {"1", "true", "yes"}
 TRACK_ONLY = os.getenv("TRACK_ONLY", "0").lower() in {"1", "true", "yes"}
+SOURCE_FALLBACK_ENABLED = os.getenv("ENABLE_SOURCE_FALLBACK", "0").lower() in {"1", "true", "yes"}
 MODEL_VERSION = "v2.6-sportapi-logistic-v1"
 MODEL_PATH = Path(__file__).resolve().parent / "data" / "sportapi_models.json"
 TRAINED_LEAGUES = {"premier league":"E0", "la liga":"SP1", "laliga":"SP1",
@@ -144,6 +147,8 @@ def _top_player_text(profile):
 
 
 def main():
+    if SOURCE_FALLBACK_ENABLED:
+        set_github_output("has_predictions", False)
     use_api_football = os.getenv("API_FOOTBALL_FALLBACK", "0").lower() in {"1", "true", "yes"}
     source = "api_football" if use_api_football else "sportapi"
     if use_api_football and not api_football.API_KEY:
@@ -161,11 +166,28 @@ def main():
         print(f"Pronostics antérieurs réglés: {settled}")
         build_reports()
 
+    if not use_api_football:
+        sportapi.reset_collection_errors()
     today = api_football.today() if use_api_football else sportapi_today()
-    matches = api_football.fixtures_on_date(today) if use_api_football else fixtures_on_date(today)
+    try:
+        matches = api_football.fixtures_on_date(today) if use_api_football else fixtures_on_date(today)
+    except (requests.RequestException, RuntimeError, ValueError) as exc:
+        if SOURCE_FALLBACK_ENABLED:
+            print(f"{source}: source indisponible ({str(exc)[:300]}); aucun pronostic conservé.")
+            return
+        raise
     if not matches:
         provider_name = "API-Football" if use_api_football else "SportAPI"
-        print(f"{provider_name} n'a renvoyé aucun match pour le {today}; aucun pronostic généré.")
+        provider_error = None if use_api_football else sportapi.LAST_ERROR
+        if use_api_football:
+            usage = api_football.request_usage()
+            if api_football.budget_exhausted() or usage["limit_reached"]:
+                print("API-Football n'a pas pu terminer la recherche des fixtures dans le budget autorisé; source ignorée.")
+                return
+        if provider_error:
+            print(f"{provider_name} indisponible pour le {today} ({provider_error}); aucun pronostic généré.")
+        else:
+            print(f"{provider_name} a répondu sans fixture pour le {today}; aucun pronostic généré.")
         if use_api_football:
             usage = api_football.request_usage()
             print(f"API-Football GET utilisés: {usage['requests']} / {usage['limit']}; restant journalier signalé: {usage['daily_remaining']}")
@@ -288,8 +310,24 @@ def main():
                         "direction": "over", "probability": probability, "estimated_odds": odds,
                         "samples": card_samples, "expected_mean": total_cards,
                         "fouls_context": total_fouls})
-        if analyzed >= 14 or time.monotonic() - started > 280:
+        if time.monotonic() - started > 280:
             break
+
+    eligible_count = sum(
+        1 for match in matches
+        if str(match.get("status", "")).lower() == "scheduled"
+        and is_allowed_league(
+            match.get("league_name") if use_api_football else leagues.get(
+                match.get("league_id"), match.get("league_name", "")
+            )
+        )
+    )
+    incomplete = (
+        (analyzed < eligible_count and time.monotonic() - started > 280)
+        or (not use_api_football and bool(sportapi.COLLECTION_ERRORS))
+        or (not use_api_football and sportapi.DAILY_REMAINING is not None
+            and sportapi.DAILY_REMAINING <= 0)
+    )
 
     provider_label = "API-FOOTBALL — SECOURS" if use_api_football else "SPORTAPI"
     lines = [f"PRONOSTICS {provider_label} — {datetime.now().strftime('%d/%m/%Y')}",
@@ -311,9 +349,24 @@ def main():
         budget_exhausted = usage["limit_reached"] or (
             usage["limit"] is not None and usage["requests"] >= usage["limit"]
         )
-    if not DRY_RUN and budget_exhausted:
-        print("Mode persistant/live annulé : budget de requêtes atteint; aucune prédiction enregistrée ni aucun message Telegram envoyé.")
+    if budget_exhausted or incomplete:
+        if budget_exhausted:
+            reason = "budget de requêtes atteint"
+        elif not use_api_football and sportapi.COLLECTION_ERRORS:
+            reason = "erreur(s) de collecte: " + "; ".join(sportapi.COLLECTION_ERRORS[:3])
+        elif not use_api_football and sportapi.DAILY_REMAINING is not None and sportapi.DAILY_REMAINING <= 0:
+            reason = "quota journalier épuisé"
+        else:
+            reason = "fenêtre d’analyse interrompue"
+        print(f"Analyse {source} incomplète ({reason}); aucune prédiction conservée ni aucun message Telegram envoyé.")
         return
+    has_predictions = bool(predictions)
+    if SOURCE_FALLBACK_ENABLED:
+        if has_predictions:
+            set_github_output("has_predictions", True)
+        if not has_predictions:
+            print(f"{source}: aucune sélection exploitable; passage au fournisseur suivant.")
+            return
     if not should_persist_results(DRY_RUN, TRACK_ONLY):
         print("DRY_RUN actif : aucun message Telegram envoyé, aucune prédiction persistée.")
         print(message)

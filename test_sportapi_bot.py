@@ -94,7 +94,7 @@ class SportAPIBotModeTests(unittest.TestCase):
         record.assert_not_called()
         reports.assert_not_called()
         send.assert_not_called()
-        self.assertIn("Mode persistant/live annulé", output.getvalue())
+        self.assertIn("incomplète (budget de requêtes atteint)", output.getvalue())
 
     def test_live_without_selections_does_not_persist_or_send_empty_message(self):
         output = io.StringIO()

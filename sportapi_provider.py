@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 import requests
+from provider_diagnostics import summarize_http_error
 
 BASE_URL = "https://sportapi.ai/api"
 API_KEY = os.getenv("SPORTAPI_KEY", "").strip()
@@ -16,6 +17,19 @@ except ValueError:
 REQUEST_COUNT = 0
 REQUEST_LIMIT_REACHED = False
 DAILY_REMAINING = None
+LAST_ERROR = None
+COLLECTION_ERRORS = []
+
+def reset_collection_errors():
+    COLLECTION_ERRORS.clear()
+    global LAST_ERROR
+    LAST_ERROR = None
+
+def _record_error(message):
+    global LAST_ERROR
+    LAST_ERROR = message
+    if len(COLLECTION_ERRORS) < 10:
+        COLLECTION_ERRORS.append(message)
 
 def sportapi_today():
     return datetime.now(PARIS).date().isoformat()
@@ -39,15 +53,19 @@ def _remaining_daily(headers):
 
 def api_get(path, attempts=2):
     """Envoie uniquement des GET, avec auth dans l'en-tête et sans exposer la clé."""
-    global REQUEST_COUNT, REQUEST_LIMIT_REACHED, DAILY_REMAINING
+    global REQUEST_COUNT, REQUEST_LIMIT_REACHED, DAILY_REMAINING, LAST_ERROR
+    LAST_ERROR = None
     if not API_KEY:
+        _record_error("SPORTAPI_KEY absente")
         return None
     for attempt in range(attempts):
         if REQUEST_LIMIT and REQUEST_COUNT >= REQUEST_LIMIT:
             REQUEST_LIMIT_REACHED = True
+            _record_error(f"plafond local atteint ({REQUEST_LIMIT} GET)")
             return None
         if DAILY_REMAINING is not None and DAILY_REMAINING <= 0:
             REQUEST_LIMIT_REACHED = True
+            _record_error("quota journalier épuisé")
             return None
         try:
             REQUEST_COUNT += 1
@@ -56,18 +74,36 @@ def api_get(path, attempts=2):
             remaining = _remaining_daily(r.headers)
             if remaining is not None:
                 DAILY_REMAINING = remaining
+                if remaining <= 0:
+                    REQUEST_LIMIT_REACHED = True
             elif DAILY_REMAINING is not None:
                 DAILY_REMAINING = max(0, DAILY_REMAINING - 1)
             if r.status_code == 200:
                 data = r.json()
-                return data if isinstance(data, dict) and data.get("success") else None
+                if isinstance(data, dict) and data.get("success"):
+                    LAST_ERROR = None
+                    return data
+                _record_error("Réponse SportAPI non confirmée")
+                return None
             if r.status_code == 429 and REQUEST_LIMIT:
                 REQUEST_LIMIT_REACHED = True
+            try:
+                error_payload = r.json()
+            except ValueError:
+                error_payload = None
+            diagnostic = summarize_http_error(
+                "SportAPI", r.status_code, r.headers,
+                payload=error_payload, text=getattr(r, "text", ""),
+            )
+            _record_error(diagnostic)
+            if r.status_code == 429 and REQUEST_LIMIT:
                 break
             if r.status_code not in {429, 500, 502, 503, 504}:
                 break
-        except (requests.RequestException, ValueError):
-            pass
+        except requests.RequestException:
+            _record_error("Erreur réseau SportAPI")
+        except ValueError:
+            _record_error("Réponse JSON invalide SportAPI")
         if attempt + 1 < attempts:
             time.sleep(1.5)
     return None

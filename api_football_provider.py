@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from api_only_stats import extract
+from provider_diagnostics import summarize_http_error
 
 BASE_URL = "https://v3.football.api-sports.io"
 API_KEY = os.getenv("API_FOOTBALL_KEY", "").strip()
@@ -66,19 +67,34 @@ def _get(path, params=None):
         REQUEST_LIMIT_REACHED = True
     if response.status_code == 429:
         REQUEST_LIMIT_REACHED = True
-        return None
+        try:
+            error_payload = response.json()
+        except ValueError:
+            error_payload = None
+        raise RuntimeError(summarize_http_error(
+            "API-Football", response.status_code, response.headers,
+            payload=error_payload, text=getattr(response, "text", ""),
+        ))
     if response.status_code != 200:
-        raise RuntimeError(f"HTTP {response.status_code} API-Football")
+        try:
+            error_payload = response.json()
+        except ValueError:
+            error_payload = None
+        raise RuntimeError(summarize_http_error(
+            "API-Football", response.status_code, response.headers,
+            payload=error_payload, text=getattr(response, "text", ""),
+        ))
     try:
         payload = response.json()
     except ValueError:
         raise RuntimeError("Réponse JSON invalide API-Football") from None
     if not isinstance(payload, dict) or payload.get("errors"):
-        # Do not print provider payloads, which may contain account details.
         errors = payload.get("errors") if isinstance(payload, dict) else None
         if isinstance(errors, dict) and any("limit" in str(key).lower() for key in errors):
             REQUEST_LIMIT_REACHED = True
-        raise RuntimeError("Erreur retournée par API-Football")
+        raise RuntimeError(summarize_http_error(
+            "API-Football", response.status_code, response.headers, payload=payload,
+        ))
     return payload.get("response", [])
 
 
