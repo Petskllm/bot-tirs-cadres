@@ -8,7 +8,7 @@ import backtest_bzzoiro as backtest
 import tracking
 import bot_sportapi
 import sportapi_provider as sportapi
-from model_rules import is_attacking_player, select_player_sot, select_team_sot
+from model_rules import is_attacking_player, is_confirmed_lineup, select_player_sot, select_team_sot
 from tracking import _bucket, _number, _prediction_key, _won
 
 
@@ -153,6 +153,37 @@ class TrackingPureFunctionsTests(unittest.TestCase):
             self.assertTrue(row["won"])
             self.assertEqual(row["status"], "settled")
 
+    def test_player_settlement_records_actual_minutes(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            predictions = data_dir / "predictions.jsonl"
+            predictions.write_text(json.dumps({
+                "source": "bzzoiro", "event_id": 303,
+                "market": "tirs_cadres_joueur", "selection": "p-1 +0,5",
+                "player_id": "p-1", "line": 0.5, "direction": "over",
+                "status": "pending",
+            }) + "\n", encoding="utf-8")
+
+            def getter(endpoint):
+                if endpoint.endswith("/stats/"):
+                    return {"stats": {"home": {}, "away": {}}}
+                return {"player_stats": [{
+                    "player_id": "p-1", "shots_on_target": 1, "minutes_played": 77,
+                }]}
+
+            with patch.object(tracking, "DATA_DIR", data_dir), patch.object(
+                tracking, "PREDICTIONS_FILE", predictions
+            ):
+                changed = tracking.settle_pending(getter=getter)
+
+            row = json.loads(predictions.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(changed, 1)
+            self.assertTrue(row["won"])
+            self.assertEqual(row["actual_minutes_played"], 77.0)
+
     def test_known_v24_legacy_rows_are_settled_as_bzzoiro(self):
         import json
         import tempfile
@@ -211,6 +242,12 @@ class ShotOnTargetModelRulesTests(unittest.TestCase):
         selected = select_team_sot(profile, self.probabilities({3.5: 0.65, 4.5: 0.72}))
         self.assertEqual(selected, (4.5, 0.72))
 
+    def test_team_selector_can_reject_short_bzzoiro_history(self):
+        profile = {"average": 11, "variance": 10, "samples": 7}
+        self.assertIsNone(select_team_sot(
+            profile, self.probabilities({3.5: 0.8, 4.5: 0.75}), min_samples=8
+        ))
+
     def test_team_selector_rejects_mean_at_cutoff_and_probability_below_cutoff(self):
         probability_fn = self.probabilities({3.5: 0.649, 4.5: 0.64})
         self.assertIsNone(select_team_sot(
@@ -222,13 +259,13 @@ class ShotOnTargetModelRulesTests(unittest.TestCase):
 
     def test_player_selector_enforces_samples_minutes_hit_rate_and_position(self):
         base = {
-            "average": 1.2, "variance": 1, "samples": 4,
-            "avg_minutes": 55, "hit_rate": 0.55, "position": "Forward",
+            "average": 1.2, "variance": 1, "samples": 8,
+            "avg_minutes": 75, "hit_rate": 0.55, "position": "Forward",
         }
         probability_fn = self.probabilities({0.5: 0.70, 1.5: 0.65})
         self.assertEqual(select_player_sot(base, probability_fn), (0.5, 0.70))
         for changes in (
-            {"samples": 3}, {"avg_minutes": 54.99}, {"hit_rate": 0.49},
+            {"samples": 7}, {"avg_minutes": 74.99}, {"hit_rate": 0.49},
             {"position": "Defender"}, {"position": ""},
         ):
             with self.subTest(changes=changes):
@@ -236,11 +273,23 @@ class ShotOnTargetModelRulesTests(unittest.TestCase):
 
     def test_player_selector_falls_back_to_over_15_only_when_eligible(self):
         profile = {
-            "average": 1.2, "variance": 1, "samples": 4,
-            "avg_minutes": 60, "hit_rate": 0.50, "position": "AM",
+            "average": 1.2, "variance": 1, "samples": 8,
+            "avg_minutes": 75, "hit_rate": 0.50, "position": "AM",
         }
         probability_fn = self.probabilities({0.5: 0.69, 1.5: 0.65})
         self.assertEqual(select_player_sot(profile, probability_fn), (1.5, 0.65))
+
+    def test_player_predictions_require_confirmed_lineup_metadata(self):
+        self.assertTrue(is_confirmed_lineup({
+            "available": {"lineups": True}, "lineup_status": "confirmed",
+        }))
+        for availability in (
+            {"available": {"lineups": True}, "lineup_status": "predicted"},
+            {"available": {"lineups": False}, "lineup_status": "confirmed"},
+            None,
+        ):
+            with self.subTest(availability=availability):
+                self.assertFalse(is_confirmed_lineup(availability))
 
     def test_position_filter_accepts_attacking_midfielder_not_defender(self):
         self.assertTrue(is_attacking_player("Attacking Midfielder"))
@@ -270,7 +319,7 @@ class BacktestProfileTests(unittest.TestCase):
         self.assertEqual(result["shots_on_target"]["average"], 5.0)
 
     def test_player_profile_matches_production_eligibility_inputs(self):
-        events = [{"id": f"event-{index}"} for index in range(4)]
+        events = [{"id": f"event-{index}"} for index in range(8)]
 
         def cached_get(endpoint):
             if endpoint.endswith("/availability/"):
@@ -288,7 +337,7 @@ class BacktestProfileTests(unittest.TestCase):
         ):
             result = backtest.player_profiles(7, None, None)
 
-        self.assertEqual(result["p1"]["samples"], 4)
+        self.assertEqual(result["p1"]["samples"], 8)
         self.assertEqual(result["p1"]["avg_minutes"], 90)
         self.assertEqual(result["p1"]["hit_rate"], 1)
         self.assertEqual(result["p1"]["position"], "forward")

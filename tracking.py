@@ -96,10 +96,16 @@ def _actuals(getter, event_id):
     values["home_sot"] = _number(home.get("shots_on_target"))
     values["away_sot"] = _number(away.get("shots_on_target"))
     player_stats = getter(f"events/{event_id}/player-stats/") or {}
+    players = player_stats.get("player_stats", [])
     values["players"] = {
         str(player.get("player_id")): _number(player.get("shots_on_target"))
-        for player in player_stats.get("player_stats", [])
+        for player in players
         if player.get("player_id") and _number(player.get("shots_on_target")) is not None
+    }
+    values["player_minutes"] = {
+        str(player.get("player_id")): _number(player.get("minutes_played"))
+        for player in players
+        if player.get("player_id") and _number(player.get("minutes_played")) is not None
     }
     return values
 
@@ -176,6 +182,10 @@ def settle_pending(getter=None, sportapi_getter=None, api_football_getter=None):
             continue
         row["actual_value"] = actual
         row["won"] = won
+        if row.get("market") == "tirs_cadres_joueur":
+            row["actual_minutes_played"] = actuals.get("player_minutes", {}).get(
+                str(row.get("player_id"))
+            )
         row["status"] = "settled"
         row["settled_at"] = now_iso()
         changed += 1

@@ -14,7 +14,14 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
 import requests
-from model_rules import normalized_player_position, select_player_sot, select_team_sot
+from model_rules import (
+    BZZOIRO_TEAM_SOT_MIN_SAMPLES,
+    PLAYER_SOT_MIN_AVG_MINUTES,
+    PLAYER_SOT_MIN_SAMPLES,
+    normalized_player_position,
+    select_player_sot,
+    select_team_sot,
+)
 from probability import line_probabilities, score_probabilities
 
 BASE = "https://sports.bzzoiro.com/api/v2"
@@ -99,7 +106,7 @@ def profile(team_id, side, kickoff, league_id, limit=10):
     return result
 
 
-def player_profiles(team_id, kickoff, league_id, limit=7):
+def player_profiles(team_id, kickoff, league_id, limit=10):
     histories = defaultdict(list)
     for index, event in enumerate(prior_events(team_id, kickoff, league_id, days=90)[:limit]):
         availability = cached_get(f"events/{event['id']}/availability/") or {}
@@ -129,7 +136,7 @@ def player_profiles(team_id, kickoff, league_id, limit=7):
                 histories[player_id].append((shots_on_target, weight, minutes, position))
     result = {}
     for player_id, history in histories.items():
-        if len(history) < 4:
+        if len(history) < PLAYER_SOT_MIN_SAMPLES:
             continue
         weight_sum = sum(item[1] for item in history)
         average_minutes = sum(item[2] * item[1] for item in history) / weight_sum
@@ -137,7 +144,7 @@ def player_profiles(team_id, kickoff, league_id, limit=7):
         positions = [item[3] for item in history if item[3]]
         # Les historiques sont ajoutés du plus récent au plus ancien.
         position = positions[0] if positions else ""
-        if average_minutes < 55:
+        if average_minutes < PLAYER_SOT_MIN_AVG_MINUTES:
             continue
         if not position:
             continue
@@ -223,7 +230,7 @@ def lineup_starter_ids(lineups):
 
 
 def last_official_starters(team_id, kickoff):
-    """Même repli que la production : dernière composition d'un match terminé."""
+    """Proxy historique connu avant le coup d'envoi; la production exige la lineup du jour."""
     for event in prior_events(team_id, kickoff, days=120)[:10]:
         lineups = cached_get(f"events/{event['id']}/lineups/") or {}
         payload = lineups.get("lineups", lineups) if isinstance(lineups, dict) else {}
@@ -325,7 +332,10 @@ def run(args):
                 sot = team_profile.get("shots_on_target")
                 if not sot or actual[actual_key] is None:
                     continue
-                selection = select_team_sot(sot, line_probabilities)
+                selection = select_team_sot(
+                    sot, line_probabilities,
+                    min_samples=BZZOIRO_TEAM_SOT_MIN_SAMPLES,
+                )
                 if selection:
                     line, probability = selection
                     add_result(rows, "tirs_cadres_equipe", event, f"{team_key} +{line}", probability, actual[actual_key], actual[actual_key] >= line + 0.5)

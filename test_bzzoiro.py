@@ -6,7 +6,14 @@ from datetime import datetime, timedelta, timezone
 from tracking import build_reports, record_predictions, settle_pending
 from api_football_validation import diagnose_api_football, format_report, validate_matches
 from bot_modes import should_persist_results, should_send_telegram
-from model_rules import is_attacking_player, normalized_player_position, select_player_sot, select_team_sot
+from model_rules import (
+    BZZOIRO_TEAM_SOT_MIN_SAMPLES,
+    is_attacking_player,
+    is_confirmed_lineup,
+    normalized_player_position,
+    select_player_sot,
+    select_team_sot,
+)
 from probability import line_probabilities
 
 # --- CONFIGURATION ---
@@ -18,7 +25,7 @@ TRACK_ONLY = os.getenv("TRACK_ONLY", "0").lower() in {"1", "true", "yes"}
 API_FOOTBALL_DIAGNOSTIC = os.getenv("API_FOOTBALL_DIAGNOSTIC", "0").lower() in {"1", "true", "yes"}
 BASE = "https://sports.bzzoiro.com/api/v2"
 headers = {"Authorization": f"Token {TOKEN}"}
-MODEL_VERSION = "v2.5-negative-binomial"
+MODEL_VERSION = "v2.6-confirmed-lineups-samples8"
 
 # Marché prioritaire : +4,5 cartons. Le seuil de probabilité reste le filtre
 # principal, mais on exige un historique minimum pour éviter les belles cotes
@@ -431,7 +438,7 @@ def get_players_sot_history(team_id, league_id=None):
 
     player_history = {}
     player_ids = {}
-    for idx, e in enumerate(finished[:7]):
+    for idx, e in enumerate(finished[:10]):
         availability = get_event_availability(e["id"])
         if availability.get("available", {}).get("player_stats") is False:
             continue
@@ -587,16 +594,11 @@ def main():
         away_id = m.get("away_team_id")
         availability = get_event_availability(fid)
         available = availability.get("available", {}) if isinstance(availability, dict) else {}
-        lineup_status = availability.get("lineup_status") if isinstance(availability, dict) else None
         starters = set()
-        if available.get("lineups") and lineup_status == "confirmed":
+        lineup_source = "composition du jour non confirmée"
+        if is_confirmed_lineup(availability):
             starters = lineup_starter_ids(get_event_lineups(fid))
-        lineup_source = "composition confirmée"
-        if not starters:
-            # Si la composition du jour n'est pas encore publiée, prendre la
-            # dernière composition officielle connue, jamais les remplaçants.
-            starters = get_last_official_starters(home_id) | get_last_official_starters(away_id)
-            lineup_source = "dernière composition officielle connue" if starters else "indisponible"
+            lineup_source = "composition confirmée" if starters else "composition confirmée indisponible"
         prediction = get_event_prediction(fid) if available.get("prediction") else {}
         odds = get_event_odds(fid) if available.get("odds") else {}
         bzzoiro_corners_prob = bzzoiro_corner_probability(prediction)
@@ -669,7 +671,10 @@ def main():
                 (away_name, a_profile["shots_on_target"], "away"),
             ]:
                 avg = profile["average"]
-                selection = select_team_sot(profile, line_probabilities)
+                selection = select_team_sot(
+                    profile, line_probabilities,
+                    min_samples=BZZOIRO_TEAM_SOT_MIN_SAMPLES,
+                )
                 if selection:
                     best_line, best_prob = selection
                     best_cote = round(1 / best_prob * 1.04, 2)

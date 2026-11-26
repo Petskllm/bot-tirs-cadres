@@ -3,13 +3,26 @@
 
 TEAM_SOT_MAX_MEAN = 12
 TEAM_SOT_MIN_PROBABILITY = 0.65
-PLAYER_SOT_MIN_SAMPLES = 4
-PLAYER_SOT_MIN_AVG_MINUTES = 55
+BZZOIRO_TEAM_SOT_MIN_SAMPLES = 8
+PLAYER_SOT_MIN_SAMPLES = 8
+PLAYER_SOT_MIN_AVG_MINUTES = 75
 PLAYER_SOT_MIN_HIT_RATE = 0.50
 PLAYER_OVER_05_MIN_PROBABILITY = 0.70
 PLAYER_OVER_05_MIN_HIT_RATE = 0.55
 PLAYER_OVER_15_MIN_PROBABILITY = 0.65
 PLAYER_OVER_15_MIN_HIT_RATE = 0.40
+
+
+def is_confirmed_lineup(availability):
+    """True uniquement si l'API confirme la composition du match cible."""
+    if not isinstance(availability, dict):
+        return False
+    available = availability.get("available", {})
+    return bool(
+        isinstance(available, dict)
+        and available.get("lineups")
+        and availability.get("lineup_status") == "confirmed"
+    )
 
 
 def normalized_player_position(profile):
@@ -42,9 +55,13 @@ def is_attacking_player(position):
     )
 
 
-def select_team_sot(profile, line_probabilities):
-    """Reproduit le filtre production des tirs cadrés d'équipe; retourne (ligne, proba)."""
-    if not profile or profile["average"] >= TEAM_SOT_MAX_MEAN:
+def select_team_sot(profile, line_probabilities, min_samples=0):
+    """Retourne la meilleure sélection équipe; le minimum d'échantillon est paramétrable."""
+    if (
+        not profile
+        or profile["average"] >= TEAM_SOT_MAX_MEAN
+        or profile.get("samples", 0) < min_samples
+    ):
         return None
     best_probability, best_line = 0.0, None
     for line in (3.5, 4.5):
