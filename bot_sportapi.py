@@ -15,7 +15,7 @@ import sportapi_provider as sportapi
 DRY_RUN = os.getenv("DRY_RUN", "1").lower() in {"1", "true", "yes"}
 TRACK_ONLY = os.getenv("TRACK_ONLY", "0").lower() in {"1", "true", "yes"}
 SOURCE_FALLBACK_ENABLED = os.getenv("ENABLE_SOURCE_FALLBACK", "0").lower() in {"1", "true", "yes"}
-PUBLISH_TEAM_SOT = os.getenv("PUBLISH_TEAM_SOT", "0").lower() in {"1", "true", "yes"}
+PUBLISH_TEAM_SOT = os.getenv("PUBLISH_TEAM_SOT", "1").lower() in {"1", "true", "yes"}
 MODEL_VERSION = "v2.6-sportapi-logistic-v1"
 MODEL_PATH = Path(__file__).resolve().parent / "data" / "sportapi_models.json"
 TRAINED_LEAGUES = {

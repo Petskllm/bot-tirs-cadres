@@ -12,7 +12,7 @@ class SportAPIBotModeTests(unittest.TestCase):
         return {"id": 75, "status": "Scheduled", "league_id": 1,
                 "home_id": 21, "away_id": 22, "home_team": "Home", "away_team": "Away"}
 
-    def test_dry_run_hides_unavailable_team_sot_market_without_side_effects(self):
+    def test_dry_run_shows_team_sot_market_without_side_effects(self):
         match = {"id": 55, "status": "Scheduled", "league_id": 1,
                  "home_id": 11, "away_id": 12, "home_team": "Home", "away_team": "Away",
                  "kickoff_utc": "2026-11-26T18:00:00Z"}
@@ -39,8 +39,9 @@ class SportAPIBotModeTests(unittest.TestCase):
         send.assert_not_called()
         text = output.getvalue()
         self.assertIn("TIRS TOTAUX", text)
-        self.assertNotIn("TIRS CADRÉS ÉQUIPE", text)
-        self.assertIn("Marchés: tirs totaux, cartons jaunes.", text)
+        self.assertIn("TIRS CADRÉS ÉQUIPE", text)
+        self.assertIn("Home +3.5 tirs cadrés", text)
+        self.assertIn("Marchés: tirs totaux, tirs cadrés par équipe, cartons jaunes.", text)
         self.assertIn("CARTONS", text)
         self.assertNotIn("CORNERS", text)
         self.assertNotIn("TIRS CADRÉS JOUEUR", text)

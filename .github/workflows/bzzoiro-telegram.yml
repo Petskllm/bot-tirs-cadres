@@ -1,18 +1,10 @@
-name: Pronostics Bzzoiro vers Telegram
+name: Pronostics Telegram
+
+env:
+  PUBLISH_TEAM_SOT: "1"
 
 on:
   workflow_dispatch:
-    inputs:
-      send_telegram:
-        description: "Envoyer le message Telegram (décocher pour un dry-run sans publication)"
-        required: false
-        type: boolean
-        default: true
-      track_only:
-        description: "Enregistrer/régler les pronostics sans envoyer Telegram"
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -22,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  run-bzzoiro:
+  run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -41,19 +33,15 @@ jobs:
           SPORTAPI_KEY: ${{ secrets.SPORTAPI_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          SEND_TELEGRAM: ${{ inputs.send_telegram }}
-          TRACK_ONLY: ${{ inputs.track_only }}
         run: |
           set -euo pipefail
           if [ -z "$BZZOIRO_TOKEN" ] && [ -z "$API_FOOTBALL_KEY" ] && [ -z "$SPORTAPI_KEY" ]; then
             echo "Aucun fournisseur configuré (BZZOIRO_TOKEN, API_FOOTBALL_KEY, SPORTAPI_KEY absents)"
             exit 1
           fi
-          if [ "$SEND_TELEGRAM" = "true" ] && [ "$TRACK_ONLY" != "true" ]; then
-            test -n "$TELEGRAM_TOKEN" || { echo "Secret TELEGRAM_TOKEN manquant"; exit 1; }
-            test -n "$CHAT_ID" || { echo "Secret CHAT_ID manquant"; exit 1; }
-          fi
-      - name: Tests hors ligne
+          test -n "$TELEGRAM_TOKEN" || { echo "Secret TELEGRAM_TOKEN manquant"; exit 1; }
+          test -n "$CHAT_ID" || { echo "Secret CHAT_ID manquant"; exit 1; }
+      - name: Tests automatiques hors ligne
         run: python -m unittest -v test_pure_functions.py test_bot_modes.py test_sportapi_bot.py test_sportapi_dry_run_preflight.py test_api_football_fallback.py test_tracking_api_football.py test_probability_model.py test_provider_cascade.py
       - name: Essayer Bzzoiro
         id: bzzoiro
@@ -63,11 +51,11 @@ jobs:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          DRY_RUN: ${{ !inputs.send_telegram || inputs.track_only }}
-          TRACK_ONLY: ${{ inputs.track_only }}
+          DRY_RUN: "false"
+          TRACK_ONLY: "false"
           ENABLE_SOURCE_FALLBACK: "1"
         run: python test_bzzoiro.py
-      - name: Essayer API-Football si Bzzoiro ne fournit pas de pronostics complets
+      - name: Essayer API-Football si aucune sélection Bzzoiro n’est exploitable
         id: api_football
         if: ${{ !cancelled() && steps.bzzoiro.outputs.has_predictions != 'true' }}
         continue-on-error: true
@@ -75,13 +63,13 @@ jobs:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           API_FOOTBALL_FALLBACK: "true"
           API_FOOTBALL_MAX_REQUESTS: "35"
-          DRY_RUN: ${{ !inputs.send_telegram || inputs.track_only }}
-          TRACK_ONLY: ${{ inputs.track_only }}
+          DRY_RUN: "false"
+          TRACK_ONLY: "false"
           ENABLE_SOURCE_FALLBACK: "1"
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python bot_sportapi.py
-      - name: Précontrôler le quota SportAPI si les deux premières sources échouent
+      - name: Précontrôler le quota SportAPI si les autres sources échouent
         id: sportapi_preflight
         if: ${{ !cancelled() && steps.bzzoiro.outputs.has_predictions != 'true' && steps.api_football.outputs.has_predictions != 'true' }}
         continue-on-error: true
@@ -89,18 +77,17 @@ jobs:
           SPORTAPI_KEY: ${{ secrets.SPORTAPI_KEY }}
         run: python sportapi_dry_run_preflight.py
       - name: Essayer SportAPI si aucune source précédente n’est exploitable
-        id: sportapi
         if: ${{ !cancelled() && steps.bzzoiro.outputs.has_predictions != 'true' && steps.api_football.outputs.has_predictions != 'true' && steps.sportapi_preflight.outcome == 'success' }}
         continue-on-error: true
         env:
           SPORTAPI_KEY: ${{ secrets.SPORTAPI_KEY }}
-          DRY_RUN: ${{ !inputs.send_telegram || inputs.track_only }}
-          TRACK_ONLY: ${{ inputs.track_only }}
+          DRY_RUN: "false"
+          TRACK_ONLY: "false"
           ENABLE_SOURCE_FALLBACK: "1"
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python bot_sportapi.py
-      - name: Persister l'historique de calibration sur la branche
+      - name: Persister automatiquement le suivi
         if: ${{ always() && !cancelled() }}
         run: |
           set -euo pipefail
@@ -117,7 +104,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bzzoiro-suivi-${{ github.run_id }}
+          name: suivi-pronostics-${{ github.run_id }}
           path: |
             data/predictions.jsonl
             data/market_report.json
