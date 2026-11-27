@@ -1,45 +1,45 @@
 {
-  "generated_at": "2026-11-26T16:32:50.686962+00:00",
+  "generated_at": "2026-11-27T19:31:23.193003+00:00",
   "markets": {
     "bzzoiro:corners": {
       "60-69%": {
-        "predictions": 1,
-        "hit_rate": 1.0,
-        "average_probability": 0.6704
+        "predictions": 5,
+        "hit_rate": 0.6,
+        "average_probability": 0.684
       },
       "70-79%": {
-        "predictions": 3,
+        "predictions": 9,
         "hit_rate": 0.6667,
-        "average_probability": 0.7319
+        "average_probability": 0.7547
       }
     },
     "bzzoiro:tirs_cadres_equipe": {
       "60-69%": {
-        "predictions": 4,
-        "hit_rate": 0.0,
-        "average_probability": 0.6706
+        "predictions": 5,
+        "hit_rate": 0.2,
+        "average_probability": 0.6732
       },
       "70-79%": {
-        "predictions": 3,
+        "predictions": 9,
         "hit_rate": 0.6667,
-        "average_probability": 0.7707
+        "average_probability": 0.778
       },
       "80-89%": {
-        "predictions": 6,
-        "hit_rate": 0.6667,
-        "average_probability": 0.8641
+        "predictions": 13,
+        "hit_rate": 0.6923,
+        "average_probability": 0.8535
       },
       "90-99%": {
-        "predictions": 4,
+        "predictions": 9,
         "hit_rate": 1.0,
-        "average_probability": 0.9464
+        "average_probability": 0.9491
       }
     },
     "bzzoiro:tirs_cadres_joueur": {
       "70-79%": {
-        "predictions": 15,
-        "hit_rate": 0.3333,
-        "average_probability": 0.7343
+        "predictions": 17,
+        "hit_rate": 0.4118,
+        "average_probability": 0.7369
       },
       "80-89%": {
         "predictions": 8,
@@ -59,9 +59,9 @@
         "average_probability": 0.6592
       },
       "70-79%": {
-        "predictions": 2,
+        "predictions": 4,
         "hit_rate": 1.0,
-        "average_probability": 0.7229
+        "average_probability": 0.7273
       }
     }
   }

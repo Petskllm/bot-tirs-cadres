@@ -1,50 +1,50 @@
 {
-  "generated_at": "2026-11-26T16:32:50.686962+00:00",
-  "settled_predictions": 51,
+  "generated_at": "2026-11-27T19:31:23.193003+00:00",
+  "settled_predictions": 84,
   "markets": {
     "bzzoiro:corners": {
-      "predictions": 4,
-      "wins": 3,
-      "hit_rate": 0.75,
-      "average_probability": 0.7165,
-      "calibration_gap": 0.0335,
-      "brier_score": 0.2048,
-      "log_loss": 0.6051,
-      "prevalence_baseline_brier": 0.1875,
-      "brier_skill_vs_prevalence": -0.0925
+      "predictions": 14,
+      "wins": 9,
+      "hit_rate": 0.6429,
+      "average_probability": 0.7294,
+      "calibration_gap": -0.0866,
+      "brier_score": 0.2375,
+      "log_loss": 0.6699,
+      "prevalence_baseline_brier": 0.2296,
+      "brier_skill_vs_prevalence": -0.0345
     },
     "bzzoiro:tirs_cadres_equipe": {
-      "predictions": 17,
-      "wins": 10,
-      "hit_rate": 0.5882,
-      "average_probability": 0.8214,
-      "calibration_gap": -0.2332,
-      "brier_score": 0.2322,
-      "log_loss": 0.6407,
-      "prevalence_baseline_brier": 0.2422,
-      "brier_skill_vs_prevalence": 0.0412
+      "predictions": 36,
+      "wins": 25,
+      "hit_rate": 0.6944,
+      "average_probability": 0.8335,
+      "calibration_gap": -0.139,
+      "brier_score": 0.195,
+      "log_loss": 0.5584,
+      "prevalence_baseline_brier": 0.2122,
+      "brier_skill_vs_prevalence": 0.081
     },
     "bzzoiro:tirs_cadres_joueur": {
-      "predictions": 26,
-      "wins": 12,
-      "hit_rate": 0.4615,
-      "average_probability": 0.7854,
-      "calibration_gap": -0.3239,
-      "brier_score": 0.328,
-      "log_loss": 0.8662,
-      "prevalence_baseline_brier": 0.2485,
-      "brier_skill_vs_prevalence": -0.32
+      "predictions": 28,
+      "wins": 14,
+      "hit_rate": 0.5,
+      "average_probability": 0.7834,
+      "calibration_gap": -0.2834,
+      "brier_score": 0.309,
+      "log_loss": 0.8244,
+      "prevalence_baseline_brier": 0.25,
+      "brier_skill_vs_prevalence": -0.2359
     },
     "bzzoiro:total_tirs": {
-      "predictions": 4,
-      "wins": 3,
-      "hit_rate": 0.75,
-      "average_probability": 0.691,
-      "calibration_gap": 0.059,
-      "brier_score": 0.1756,
-      "log_loss": 0.5344,
-      "prevalence_baseline_brier": 0.1875,
-      "brier_skill_vs_prevalence": 0.0637
+      "predictions": 6,
+      "wins": 5,
+      "hit_rate": 0.8333,
+      "average_probability": 0.7046,
+      "calibration_gap": 0.1287,
+      "brier_score": 0.141,
+      "log_loss": 0.4604,
+      "prevalence_baseline_brier": 0.1389,
+      "brier_skill_vs_prevalence": -0.0154
     }
   }
 }
